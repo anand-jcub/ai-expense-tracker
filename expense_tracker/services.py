@@ -182,13 +182,18 @@ def filter_dashboard_rows(rows, start_date: str = "", end_date: str = "", exclud
 def expense_amount_for_row(row, use_my_share: bool) -> Decimal:
     """Return the expense amount for a row.
 
-    When *use_my_share* is True, returns the user's split share for any
-    transaction where split_ratio < 1 (i.e. shared among multiple people),
-    regardless of expense_type.
+    Excludes non-expense transaction types (Transfer, Loan). When use_my_share is
+    True, returns the user's split share (my_share), otherwise returns the full debit.
     """
     debit = Decimal(str(row["debit"] or 0))
     if debit <= 0:
         return Decimal("0")
+    
+    # Exclude Transfer and Loan from personal consumption expenses
+    expense_type = row["expense_type"] if (hasattr(row, "keys") and "expense_type" in row.keys()) or (isinstance(row, dict) and "expense_type" in row) else None
+    if expense_type in {"Transfer", "Loan"}:
+        return Decimal("0")
+        
     if use_my_share:
         my_share = Decimal(str(row["my_share"] or 0))
         if my_share > 0:
@@ -210,12 +215,11 @@ def expenses_by_category(rows, use_my_share: bool = False) -> list[tuple[str, De
 def dashboard_totals(rows, use_my_share: bool = False) -> dict[str, Decimal]:
     credit_total, debit_total = credit_debit_totals(rows)
     expense_total = sum(expense_amount_for_row(row, use_my_share) for row in rows)
-    effective_debit = expense_total if use_my_share else debit_total
     return {
         "credit": credit_total,
-        "debit": effective_debit,
+        "debit": debit_total,
         "expense": expense_total,
-        "net": credit_total - effective_debit,
+        "net": credit_total - debit_total,
     }
 
 

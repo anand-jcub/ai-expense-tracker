@@ -501,8 +501,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in period], [1])
         totals = dashboard_totals(period, use_my_share=True)
         self.assertEqual(totals["credit"], Decimal("0"))
-        # When use_my_share is True, debit reflects the user's share
-        self.assertEqual(totals["debit"], Decimal("500"))
+        # Period debits is always the raw cash outflow (debit_total)
+        self.assertEqual(totals["debit"], Decimal("1000"))
         self.assertEqual(totals["expense"], Decimal("500"))
         self.assertEqual(expenses_by_category(period, use_my_share=True), [("Food", Decimal("500"))])
 
