@@ -555,6 +555,86 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(Decimal(str(two_people["split_ratio"])), Decimal("0.5"))
         self.assertEqual(Decimal(str(two_people["my_share"])), Decimal("500.00"))
 
+    def test_transaction_connection_offsets_and_suggestions(self) -> None:
+        # Import a debit transaction: Send Ananthu 1500
+        debit_rows = [
+            {
+                "txn_date": "2026-07-01",
+                "value_date": "2026-07-01",
+                "description": "UPI/DR/123/ANANTHU/SBIN/ananthu/UPI",
+                "debit": Decimal("1500.00"),
+                "credit": Decimal("0"),
+                "balance": Decimal("4000.00"),
+                "raw_text": "sample",
+            }
+        ]
+        import_transactions(self.conn, "statement1.pdf", "hash1", debit_rows, True)
+        
+        # Import a credit transaction: Ananthu sends 1500 back
+        credit_rows = [
+            {
+                "txn_date": "2026-07-02",
+                "value_date": "2026-07-02",
+                "description": "UPI/CR/124/ANANTHU/SBIN/ananthu/UPI",
+                "debit": Decimal("0"),
+                "credit": Decimal("1500.00"),
+                "balance": Decimal("5500.00"),
+                "raw_text": "sample2",
+            }
+        ]
+        import_transactions(self.conn, "statement2.pdf", "hash2", credit_rows, True)
+        
+        # Query linkables and suggestions
+        from expense_tracker.connections import get_connection_suggestions
+        from expense_tracker.db import (
+            add_transaction_link,
+            remove_transaction_link,
+            get_transaction_links,
+            dashboard_data,
+        )
+        
+        suggestions = get_connection_suggestions(self.conn)
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0]["debit_merchant"], "Dr Ananthu Ananthu")
+        self.assertEqual(suggestions[0]["credit_merchant"], "Cr Ananthu Ananthu")
+        self.assertEqual(suggestions[0]["suggested_amount"], 1500.0)
+        
+        # Get transaction IDs
+        txs = self.conn.execute("select id, debit, credit from transactions").fetchall()
+        debit_id = [t["id"] for t in txs if t["debit"] > 0][0]
+        credit_id = [t["id"] for t in txs if t["credit"] > 0][0]
+        
+        # Connect them
+        link_id = add_transaction_link(self.conn, debit_id, credit_id, Decimal("1500.00"))
+        
+        # Suggestions should now be empty because both are fully linked
+        self.assertEqual(len(get_connection_suggestions(self.conn)), 0)
+        
+        # Check active connections
+        links = get_transaction_links(self.conn)
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["link_id"], link_id)
+        
+        # Check dashboard aggregates: should offset debit and credit to 0!
+        data = dashboard_data(self.conn)
+        from expense_tracker.services import filter_dashboard_rows, dashboard_totals
+        period_rows = filter_dashboard_rows(data["transactions"])
+        totals = dashboard_totals(period_rows)
+        self.assertEqual(totals["debit"], Decimal("0"))
+        self.assertEqual(totals["credit"], Decimal("0"))
+        self.assertEqual(totals["expense"], Decimal("0"))
+        
+        # Remove connection
+        remove_transaction_link(self.conn, link_id)
+        self.assertEqual(len(get_transaction_links(self.conn)), 0)
+        
+        # Re-check aggregates: should be back to 1500
+        data2 = dashboard_data(self.conn)
+        period_rows2 = filter_dashboard_rows(data2["transactions"])
+        totals2 = dashboard_totals(period_rows2)
+        self.assertEqual(totals2["debit"], Decimal("1500.00"))
+        self.assertEqual(totals2["credit"], Decimal("1500.00"))
+
 
 if __name__ == "__main__":
     unittest.main()
