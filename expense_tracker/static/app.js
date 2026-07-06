@@ -444,4 +444,14 @@
   
   if (manualDebit) manualDebit.addEventListener('change', updateManualLinkAmount);
   if (manualCredit) manualCredit.addEventListener('change', updateManualLinkAmount);
+
+  window.filterRulesTable = function() {
+    var query = document.getElementById('rules-search-input').value.toLowerCase();
+    var rows = document.querySelectorAll('#rules-table-body tr');
+    rows.forEach(function(row) {
+      if (row.classList.contains('empty-row')) return;
+      var text = row.textContent.toLowerCase();
+      row.style.display = text.includes(query) ? '' : 'none';
+    });
+  }
 })();

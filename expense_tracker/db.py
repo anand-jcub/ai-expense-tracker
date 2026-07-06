@@ -684,3 +684,8 @@ def get_linkable_transactions(conn: sqlite3.Connection) -> dict[str, list[dict]]
         "debits": [dict(d) for d in debits],
         "credits": [dict(c) for c in credits],
     }
+
+
+def delete_merchant_rule(conn: sqlite3.Connection, rule_id: int) -> None:
+    conn.execute("delete from merchant_rules where id = ?", (rule_id,))
+    conn.commit()

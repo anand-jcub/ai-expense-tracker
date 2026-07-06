@@ -233,6 +233,24 @@ def render_credit_debit_graph(rows, query: str) -> str:
     """
 
 
+def category_badge(category: str) -> str:
+    cat_lower = str(category or "").lower()
+    style_class = "uncategorized"
+    if "food" in cat_lower or "dining" in cat_lower or "groceries" in cat_lower:
+        style_class = "cat-food"
+    elif "personal" in cat_lower:
+        style_class = "cat-personal"
+    elif "business" in cat_lower:
+        style_class = "cat-business"
+    elif "health" in cat_lower:
+        style_class = "cat-health"
+    elif "transport" in cat_lower or "travel" in cat_lower:
+        style_class = "cat-transport"
+    elif "leisure" in cat_lower or "entertainment" in cat_lower:
+        style_class = "cat-leisure"
+    return f'<span class="cat-badge {style_class}">{esc(category or "Uncategorized")}</span>'
+
+
 def render_person_transaction_rows(rows) -> str:
     if not rows:
         return '<tr><td colspan="6" class="empty">No transactions to show.</td></tr>'
@@ -246,7 +264,7 @@ def render_person_transaction_rows(rows) -> str:
               <td>{money(row['credit'])}</td>
               <td>{money(row['debit'])}</td>
               <td>{signed_amount(row['amount_signed'])}</td>
-              <td>{esc(row['category'] or 'Uncategorized')}</td>
+              <td>{category_badge(row['category'])}</td>
             </tr>
             """
         )
@@ -563,15 +581,21 @@ def render_recent_rows(rows) -> str:
 
 def render_rules(rows) -> str:
     if not rows:
-        return '<tr><td colspan="5" class="empty">Merchant mappings will appear after confirmations.</td></tr>'
+        return '<tr class="empty-row"><td colspan="6" class="empty">Merchant mappings will appear after confirmations.</td></tr>'
     return "".join(
         f"""
         <tr>
-          <td>{esc(row['merchant_display'])}</td>
-          <td>{esc(row['category'])}</td>
-          <td>{esc(row['expense_type'])}</td>
+          <td><strong>{esc(row['merchant_display'])}</strong></td>
+          <td>{category_badge(row['category'])}</td>
+          <td><span class="type-tag {esc(str(row['expense_type']).lower())}">{esc(row['expense_type'])}</span></td>
           <td>{split_display(row['split_ratio'])}</td>
-          <td>{esc(row['match_count'])}</td>
+          <td><span class="match-count-pill">{esc(row['match_count'])}</span></td>
+          <td>
+            <form method="post" action="/delete-rule" style="margin:0; display:inline;" onsubmit="return confirm('Delete this matching rule?');">
+              <input type="hidden" name="rule_id" value="{row['id']}">
+              <button type="submit" class="button danger subtle small" style="min-height: 28px; padding: 4px 8px; font-size:11px;">Delete</button>
+            </form>
+          </td>
         </tr>
         """
         for row in rows
@@ -874,10 +898,13 @@ def page(
         <div class="grid two">
           <section>
             <h2>Merchant knowledge base</h2>
+            <div class="rules-search-wrapper" style="margin-bottom:12px;">
+              <input type="text" id="rules-search-input" placeholder="Search rules..." oninput="filterRulesTable()" style="width:100%;">
+            </div>
             <div style="overflow-x: auto;">
               <table>
-                <thead><tr><th>Merchant</th><th>Category</th><th>Type</th><th>Split</th><th>Uses</th></tr></thead>
-                <tbody>{render_rules(data['rules'])}</tbody>
+                <thead><tr><th>Merchant</th><th>Category</th><th>Type</th><th>Split</th><th>Uses</th><th>Action</th></tr></thead>
+                <tbody id="rules-table-body">{render_rules(data['rules'])}</tbody>
               </table>
             </div>
           </section>

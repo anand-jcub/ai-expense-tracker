@@ -20,6 +20,7 @@ from .db import (
     add_transaction_link,
     connect,
     dashboard_data,
+    delete_merchant_rule,
     file_sha256,
     import_transactions,
     init_db,
@@ -86,6 +87,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             self.handle_connect()
         elif self.path == "/disconnect":
             self.handle_disconnect()
+        elif self.path == "/delete-rule":
+            self.handle_delete_rule()
         else:
             self.send_error(404)
 
@@ -347,6 +350,18 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             self.redirect(message="Connection removed successfully.")
         except Exception as exc:
             logger.exception("Unexpected error disconnecting transactions.")
+            self.redirect(error=str(exc))
+
+    def handle_delete_rule(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+        try:
+            rule_id = int(params.get("rule_id", ["0"])[0])
+            with connect() as conn:
+                delete_merchant_rule(conn, rule_id)
+            self.redirect(message="Merchant rule deleted successfully.")
+        except Exception as exc:
+            logger.exception("Unexpected error deleting rule.")
             self.redirect(error=str(exc))
 
 
