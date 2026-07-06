@@ -213,6 +213,15 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in newest], [2, 3, 1])
         self.assertEqual([row["id"] for row in oldest], [1, 3, 2])
 
+        # Transactions with a matched rule should be placed last
+        rows_with_rules = [
+            {"id": 1, "txn_date": "2026-07-01", "rule_id": 8},
+            {"id": 2, "txn_date": "2026-07-03", "rule_id": None},
+            {"id": 3, "txn_date": "2026-07-02", "rule_id": None},
+        ]
+        newest_rules = sort_review_rows(rows_with_rules, "newest")
+        self.assertEqual([row["id"] for row in newest_rules], [2, 3, 1])
+
     def test_review_rows_can_be_searched(self) -> None:
         rows = [
             {

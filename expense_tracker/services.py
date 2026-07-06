@@ -63,7 +63,11 @@ def split_display(value) -> str:
 
 def sort_review_rows(rows, direction: str):
     reverse = direction != "oldest"
-    return sorted(rows, key=lambda row: (row["txn_date"], row["id"]), reverse=reverse)
+    by_date = sorted(rows, key=lambda r: (r["txn_date"], r["id"]), reverse=reverse)
+    def has_matched_rule(r):
+        d = dict(r)
+        return 1 if d.get("rule_id") is not None else 0
+    return sorted(by_date, key=has_matched_rule)
 
 
 def filter_review_rows(rows, query: str):

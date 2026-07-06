@@ -172,16 +172,16 @@ def find_merchant_rule(conn, merchant_key: str):
         return best, best_score
     return None, Decimal("0")
 
-
 def classify_transaction(conn, merchant_key: str) -> Classification:
     row, match_score = find_merchant_rule(conn, merchant_key)
     if row:
         confidence = Decimal(str(row["confidence"])) * match_score
+        status = "auto" if match_score == Decimal("1.00") else "needs_review"
         return Classification(
             category=row["category"],
             expense_type=row["expense_type"],
             split_ratio=Decimal(str(row["split_ratio"])),
-            status="auto",
+            status=status,
             confidence=confidence.quantize(Decimal("0.01")),
             rule_id=row["id"],
         )

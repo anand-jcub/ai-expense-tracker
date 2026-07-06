@@ -516,7 +516,7 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     rows = conn.execute(
         """
         select t.*, c.category, c.expense_type, c.split_ratio, c.my_share,
-               c.status, c.confidence, c.notes
+               c.status, c.confidence, c.notes, c.rule_id
         from transactions t
         join classifications c on c.transaction_id = t.id
         order by t.txn_date desc, t.id desc
