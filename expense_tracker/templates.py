@@ -583,6 +583,10 @@ def page(
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
           <span>Dashboard</span>
         </a>
+        <a href="#import-add" class="tab-link" data-tab="import-add">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <span>Import / Add</span>
+        </a>
         <a href="#review" class="tab-link" data-tab="review">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
           <span>Review Queue</span>
@@ -617,18 +621,6 @@ def page(
           <div class="metric"><span>Awaiting review</span><strong>{len(data['pending'])}</strong></div>
         </div>
 
-        <div class="grid two">
-          <section>
-            <h2>Import weekly SBI statement</h2>
-            <form class="import" method="post" action="/import" enctype="multipart/form-data">
-              <label>Statement PDF <input type="file" name="statement" accept="application/pdf" required></label>
-              <label>Password <input type="password" name="password" autocomplete="off"></label>
-              <button type="submit">Import</button>
-            </form>
-          </section>
-          {render_manual_transaction_form()}
-        </div>
-
         <div class="grid two" style="margin-top:24px;">
           <section>
             <h2>Total credits / debits</h2>
@@ -655,7 +647,22 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 2: Review Queue -->
+      <!-- Tab 2: Import & Add -->
+      <div id="pane-import-add" class="tab-pane">
+        <div class="grid two">
+          <section>
+            <h2>Import weekly SBI statement</h2>
+            <form class="import" method="post" action="/import" enctype="multipart/form-data">
+              <label>Statement PDF <input type="file" name="statement" accept="application/pdf" required></label>
+              <label>Password <input type="password" name="password" autocomplete="off"></label>
+              <button type="submit">Import</button>
+            </form>
+          </section>
+          {render_manual_transaction_form()}
+        </div>
+      </div>
+
+      <!-- Tab 3: Review Queue -->
       <div id="pane-review" class="tab-pane">
         <section>
           <h2>Transactions awaiting review</h2>
@@ -673,7 +680,7 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 3: Edit Classifications -->
+      <!-- Tab 4: Edit Classifications -->
       <div id="pane-transactions" class="tab-pane">
         <section>
           <h2>Edit classifications</h2>
@@ -690,7 +697,7 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 4: Search -->
+      <!-- Tab 5: Search -->
       <div id="pane-search" class="tab-pane">
         <section>
           <h2>Credit / debit search</h2>
@@ -705,7 +712,7 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 5: Knowledge Base & Shared -->
+      <!-- Tab 6: Knowledge Base & Shared -->
       <div id="pane-rules" class="tab-pane">
         <div class="grid two">
           <section>
