@@ -73,7 +73,6 @@ def render_dashboard_filters(
     <section class="dashboard-controls">
       <div class="section-head">
         <h2>Dashboard period</h2>
-        <span class="period-label">{esc(active_period_label(start_date, end_date))}</span>
       </div>
       <form method="get" action="/" class="period-form">
         <label>Start date <input type="date" name="start_date" value="{esc(start_date)}" min="{esc(min_date)}" max="{esc(max_date)}"></label>
