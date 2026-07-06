@@ -62,6 +62,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             self.serve_static("style.css", "text/css; charset=utf-8")
         elif parsed.path == "/app.js":
             self.serve_static("app.js", "application/javascript; charset=utf-8")
+        elif parsed.path == "/chart.js":
+            self.serve_static("chart.js", "application/javascript; charset=utf-8")
         elif parsed.path == "/export.csv":
             self.export_file("csv")
         elif parsed.path == "/export.json":

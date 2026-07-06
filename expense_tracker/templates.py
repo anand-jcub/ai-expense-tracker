@@ -560,7 +560,7 @@ def page(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
   <link rel="stylesheet" href="/style.css?v=3">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="/chart.js?v=3"></script>
 </head>
 <body>
   <header>
