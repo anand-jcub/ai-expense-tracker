@@ -52,6 +52,7 @@ STOP_TOKENS = {
     "utr",
     "p2m",
     "p2p",
+    "sbin",
 }
 
 
@@ -105,7 +106,7 @@ def rule_match_score(merchant_key: str, rule_key: str) -> Decimal:
         return Decimal("0.86") if longest >= 3 else Decimal("0")
 
     shared = merchant_parts & rule_parts
-    if shared and max(len(token) for token in shared) >= 4:
+    if len(shared) >= 2 and max(len(token) for token in shared) >= 4:
         return Decimal("0.82")
     return Decimal("0")
 

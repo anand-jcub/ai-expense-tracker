@@ -132,6 +132,9 @@ class CoreTests(unittest.TestCase):
     def test_rule_matching_handles_spacing_variants(self) -> None:
         self.assertGreaterEqual(rule_match_score("bb now", "bbnow"), Decimal("0.82"))
         self.assertGreaterEqual(rule_match_score("mathew", "mathew jose"), Decimal("0.82"))
+        # Should not match on a single shared token when distinct tokens exist on both sides
+        self.assertLess(rule_match_score("sujith sbin sujithsugu", "ranjima sbin"), Decimal("0.80"))
+        self.assertLess(rule_match_score("anil kumar", "vijay kumar shop"), Decimal("0.80"))
 
     def test_parse_sbi_table_rows(self) -> None:
         table = [
