@@ -248,6 +248,8 @@ def category_badge(category: str) -> str:
         style_class = "cat-transport"
     elif "leisure" in cat_lower or "entertainment" in cat_lower:
         style_class = "cat-leisure"
+    elif "family" in cat_lower:
+        style_class = "cat-family"
     return f'<span class="cat-badge {style_class}">{esc(category or "Uncategorized")}</span>'
 
 

@@ -19,6 +19,7 @@ CATEGORIES = [
     "Business",
     "Transfer",
     "Loan",
+    "Family",
     "Other",
 ]
 EXPENSE_TYPES = ["Personal", "Business", "Shared", "Transfer", "Loan", "Other"]
