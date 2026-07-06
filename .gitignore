@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.env
+
+# Application databases & data backups
+data/*.db
+data/*.db.backup*
+data/expenses.db
+
+# Exports & Output directories
+outputs/
+*.csv
+*.json
+
+# OS files
+.DS_Store
+Thumbs.db
