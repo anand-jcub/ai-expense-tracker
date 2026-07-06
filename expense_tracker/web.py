@@ -17,11 +17,13 @@ from .db import (
     APP_ROOT,
     DB_PATH,
     add_manual_transaction,
+    add_transaction_link,
     connect,
     dashboard_data,
     file_sha256,
     import_transactions,
     init_db,
+    remove_transaction_link,
     review_transaction,
     write_csv,
     write_json,
@@ -80,6 +82,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             self.handle_review()
         elif self.path == "/edit-classifications":
             self.handle_edit_classifications()
+        elif self.path == "/connect":
+            self.handle_connect()
+        elif self.path == "/disconnect":
+            self.handle_disconnect()
         else:
             self.send_error(404)
 
@@ -310,6 +316,38 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def handle_connect(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+        try:
+            debit_id = int(params.get("debit_id", ["0"])[0])
+            credit_id = int(params.get("credit_id", ["0"])[0])
+            try:
+                amount = Decimal(params.get("amount", ["0"])[0])
+            except InvalidOperation:
+                raise ValueError("Enter a valid amount.")
+            
+            with connect() as conn:
+                add_transaction_link(conn, debit_id, credit_id, amount)
+            self.redirect(message="Transactions connected successfully.")
+        except ValueError as exc:
+            self.redirect(error=str(exc))
+        except Exception as exc:
+            logger.exception("Unexpected error connecting transactions.")
+            self.redirect(error=str(exc))
+
+    def handle_disconnect(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+        try:
+            link_id = int(params.get("link_id", ["0"])[0])
+            with connect() as conn:
+                remove_transaction_link(conn, link_id)
+            self.redirect(message="Connection removed successfully.")
+        except Exception as exc:
+            logger.exception("Unexpected error disconnecting transactions.")
+            self.redirect(error=str(exc))
 
 
 def run(host: str = "127.0.0.1", port: int = 8765) -> None:

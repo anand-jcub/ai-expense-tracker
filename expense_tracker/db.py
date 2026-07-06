@@ -109,6 +109,15 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         create index if not exists idx_classifications_status on classifications(status);
         create index if not exists idx_transactions_txn_date on transactions(txn_date);
+
+        create table if not exists transaction_links (
+            id integer primary key autoincrement,
+            debit_id integer not null references transactions(id) on delete cascade,
+            credit_id integer not null references transactions(id) on delete cascade,
+            amount numeric not null,
+            created_at text not null,
+            unique(debit_id, credit_id)
+        );
         """
     )
     conn.commit()
@@ -516,7 +525,9 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     rows = conn.execute(
         """
         select t.*, c.category, c.expense_type, c.split_ratio, c.my_share,
-               c.status, c.confidence, c.notes, c.rule_id
+               c.status, c.confidence, c.notes, c.rule_id,
+               coalesce((select sum(amount) from transaction_links where debit_id = t.id), 0) as debit_offset,
+               coalesce((select sum(amount) from transaction_links where credit_id = t.id), 0) as credit_offset
         from transactions t
         join classifications c on c.transaction_id = t.id
         order by t.txn_date desc, t.id desc
@@ -538,12 +549,16 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     rules = conn.execute(
         "select * from merchant_rules order by updated_at desc, merchant_display"
     ).fetchall()
+    from .connections import get_connection_suggestions
     return {
         "transactions": rows,
         "pending": pending,
         "shared": shared[:15],
         "top_merchants": sorted(by_merchant.items(), key=lambda item: item[1], reverse=True)[:10],
         "rules": rules,
+        "suggestions": get_connection_suggestions(conn),
+        "links": get_transaction_links(conn),
+        "linkable": get_linkable_transactions(conn),
     }
 
 
@@ -553,7 +568,9 @@ def export_rows(conn: sqlite3.Connection) -> list[dict]:
         select t.id, t.txn_date, t.value_date, t.description, t.reference,
                t.debit, t.credit, t.amount_signed, t.balance,
                t.merchant_display, c.category, c.expense_type,
-               c.split_ratio, c.my_share, c.status, c.confidence, c.notes
+               c.split_ratio, c.my_share, c.status, c.confidence, c.notes,
+               coalesce((select sum(amount) from transaction_links where debit_id = t.id), 0) as debit_offset,
+               coalesce((select sum(amount) from transaction_links where credit_id = t.id), 0) as credit_offset
         from transactions t
         join classifications c on c.transaction_id = t.id
         order by t.txn_date, t.id
@@ -575,3 +592,95 @@ def write_csv(conn: sqlite3.Connection, path: Path) -> None:
 
 def write_json(conn: sqlite3.Connection, path: Path) -> None:
     path.write_text(json.dumps(export_rows(conn), indent=2), encoding="utf-8")
+
+
+def add_transaction_link(conn: sqlite3.Connection, debit_id: int, credit_id: int, amount: Decimal) -> int:
+    if amount <= 0:
+        raise ValueError("Link amount must be greater than zero.")
+    # Fetch debit info
+    debit_row = conn.execute("select debit from transactions where id = ?", (debit_id,)).fetchone()
+    if not debit_row or Decimal(str(debit_row["debit"])) <= 0:
+        raise ValueError("Invalid debit transaction.")
+    # Fetch credit info
+    credit_row = conn.execute("select credit from transactions where id = ?", (credit_id,)).fetchone()
+    if not credit_row or Decimal(str(credit_row["credit"])) <= 0:
+        raise ValueError("Invalid credit transaction.")
+    
+    # Calculate remaining debit
+    linked_debit = conn.execute(
+        "select sum(amount) as s from transaction_links where debit_id = ?", (debit_id,)
+    ).fetchone()["s"]
+    linked_debit_val = Decimal(str(linked_debit)) if linked_debit is not None else Decimal("0")
+    remaining_debit = Decimal(str(debit_row["debit"])) - linked_debit_val
+    
+    # Calculate remaining credit
+    linked_credit = conn.execute(
+        "select sum(amount) as s from transaction_links where credit_id = ?", (credit_id,)
+    ).fetchone()["s"]
+    linked_credit_val = Decimal(str(linked_credit)) if linked_credit is not None else Decimal("0")
+    remaining_credit = Decimal(str(credit_row["credit"])) - linked_credit_val
+    
+    if amount > remaining_debit:
+        raise ValueError(f"Amount exceeds remaining debit balance of Rs {remaining_debit:.2f}")
+    if amount > remaining_credit:
+        raise ValueError(f"Amount exceeds remaining credit balance of Rs {remaining_credit:.2f}")
+    
+    now = utc_now()
+    cur = conn.execute(
+        """
+        insert into transaction_links (debit_id, credit_id, amount, created_at)
+        values (?, ?, ?, ?)
+        """,
+        (debit_id, credit_id, str(amount), now)
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def remove_transaction_link(conn: sqlite3.Connection, link_id: int) -> None:
+    conn.execute("delete from transaction_links where id = ?", (link_id,))
+    conn.commit()
+
+
+def get_transaction_links(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        select l.id as link_id, l.amount as link_amount, l.created_at as linked_at,
+               td.id as debit_id, td.txn_date as debit_date, td.merchant_display as debit_merchant,
+               td.description as debit_desc, td.debit as debit_total,
+               tc.id as credit_id, tc.txn_date as credit_date, tc.merchant_display as credit_merchant,
+               tc.description as credit_desc, tc.credit as credit_total
+        from transaction_links l
+        join transactions td on l.debit_id = td.id
+        join transactions tc on l.credit_id = tc.id
+        order by l.created_at desc
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_linkable_transactions(conn: sqlite3.Connection) -> dict[str, list[dict]]:
+    # Linkable debits
+    debits = conn.execute(
+        """
+        select t.*,
+               (t.debit - coalesce((select sum(amount) from transaction_links where debit_id = t.id), 0)) as remaining
+        from transactions t
+        where t.debit > 0 and remaining > 0
+        order by t.txn_date desc, t.id desc
+        """
+    ).fetchall()
+    # Linkable credits
+    credits = conn.execute(
+        """
+        select t.*,
+               (t.credit - coalesce((select sum(amount) from transaction_links where credit_id = t.id), 0)) as remaining
+        from transactions t
+        where t.credit > 0 and remaining > 0
+        order by t.txn_date desc, t.id desc
+        """
+    ).fetchall()
+    return {
+        "debits": [dict(d) for d in debits],
+        "credits": [dict(c) for c in credits],
+    }

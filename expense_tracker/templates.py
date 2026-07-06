@@ -385,6 +385,140 @@ def render_edit_rows(rows) -> str:
     return "".join(output)
 
 
+def render_suggestions(suggestions: list[dict]) -> str:
+    if not suggestions:
+        return '<p class="empty">No connection suggestions found. Normal payees/narration matching automatically starts once statements are uploaded.</p>'
+    
+    html_items = []
+    for s in suggestions:
+        html_items.append(
+            f"""
+            <div class="suggestion-card">
+              <div class="suggestion-info">
+                <div class="suggestion-reason">{esc(s['reason'])}</div>
+                <div class="suggestion-pair">
+                  <div class="suggestion-item debit">
+                    <strong>Debit: {esc(s['debit_merchant'])}</strong>
+                    <span>{esc(s['debit_desc'])}</span>
+                    <span class="date">{esc(s['debit_date'])} (Remaining: {money(s['debit_remaining'])})</span>
+                  </div>
+                  <div class="suggestion-arrow">&rarr;</div>
+                  <div class="suggestion-item credit">
+                    <strong>Credit: {esc(s['credit_merchant'])}</strong>
+                    <span>{esc(s['credit_desc'])}</span>
+                    <span class="date">{esc(s['credit_date'])} (Remaining: {money(s['credit_remaining'])})</span>
+                  </div>
+                </div>
+              </div>
+              <form method="post" action="/connect" class="suggestion-action">
+                <input type="hidden" name="debit_id" value="{s['debit_id']}">
+                <input type="hidden" name="credit_id" value="{s['credit_id']}">
+                <input type="hidden" name="amount" value="{s['suggested_amount']}">
+                <button type="submit" class="button">Link {money(s['suggested_amount'])}</button>
+              </form>
+            </div>
+            """
+        )
+    return '<div class="suggestions-list">' + "".join(html_items) + "</div>"
+
+
+def render_active_connections(links: list[dict]) -> str:
+    if not links:
+        return '<p class="empty">No active connections. Debits and credits are currently computed independently.</p>'
+    
+    rows = []
+    for l in links:
+        rows.append(
+            f"""
+            <tr>
+              <td>{esc(l['linked_at'].split('T')[0])}</td>
+              <td><strong>{money(l['link_amount'])}</strong></td>
+              <td>
+                <div class="linked-pair-info">
+                  <span class="tag debit">DR</span>
+                  <strong>{esc(l['debit_merchant'])}</strong> ({esc(l['debit_date'])})
+                </div>
+              </td>
+              <td>
+                <div class="linked-pair-info">
+                  <span class="tag credit">CR</span>
+                  <strong>{esc(l['credit_merchant'])}</strong> ({esc(l['credit_date'])})
+                </div>
+              </td>
+              <td>
+                <form method="post" action="/disconnect">
+                  <input type="hidden" name="link_id" value="{l['link_id']}">
+                  <button type="submit" class="button danger subtle small">Unlink</button>
+                </form>
+              </td>
+            </tr>
+            """
+        )
+    return f"""
+    <div style="overflow-x: auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Linked Date</th>
+            <th>Offset Amount</th>
+            <th>Debit Transaction</th>
+            <th>Credit Transaction</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {"".join(rows)}
+        </tbody>
+      </table>
+    </div>
+    """
+
+
+def render_manual_linker(linkable: dict) -> str:
+    debits = linkable["debits"]
+    credits = linkable["credits"]
+    
+    debit_options = "".join(
+        f'<option value="{d["id"]}" data-remaining="{d["remaining"]}">{esc(d["txn_date"])} - {esc(d["merchant_display"])} (Rem: {money(d["remaining"])})</option>'
+        for d in debits
+    )
+    credit_options = "".join(
+        f'<option value="{c["id"]}" data-remaining="{c["remaining"]}">{esc(c["txn_date"])} - {esc(c["merchant_display"])} (Rem: {money(c["remaining"])})</option>'
+        for c in credits
+    )
+    
+    if not debits or not credits:
+        return '<p class="empty">You need at least one unlinked debit and one unlinked credit to create a manual connection.</p>'
+        
+    return f"""
+    <form method="post" action="/connect" class="manual-linker-form">
+      <div class="grid three">
+        <label>
+          <span>Select Debit (DR)</span>
+          <select name="debit_id" id="manual-debit-select" required>
+            <option value="">-- Choose Debit --</option>
+            {debit_options}
+          </select>
+        </label>
+        <label>
+          <span>Select Credit (CR)</span>
+          <select name="credit_id" id="manual-credit-select" required>
+            <option value="">-- Choose Credit --</option>
+            {credit_options}
+          </select>
+        </label>
+        <label>
+          <span>Link Amount (Rs)</span>
+          <div class="input-with-button" style="display:flex; gap: 8px;">
+            <input type="number" name="amount" step="0.01" min="0.01" placeholder="Enter amount" required id="manual-link-amount" style="flex:1;">
+            <button type="submit" class="button">Link</button>
+          </div>
+        </label>
+      </div>
+    </form>
+    """
+
+
 def review_batch_actions(rows) -> str:
     if not rows:
         return ""
@@ -586,6 +720,11 @@ def page(
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           <span>Import / Add</span>
         </a>
+        <a href="#loops" class="tab-link" data-tab="loops">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
+          <span>Loops</span>
+          {f'<span class="tab-badge ok" id="suggestions-badge">{len(data["suggestions"])}</span>' if len(data["suggestions"]) > 0 else ""}
+        </a>
         <a href="#review" class="tab-link" data-tab="review">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
           <span>Review Queue</span>
@@ -661,7 +800,26 @@ def page(
         </div>
       </div>
 
-      <!-- Tab 3: Review Queue -->
+      <!-- Tab 3: Loops -->
+      <div id="pane-loops" class="tab-pane">
+        <section>
+          <h2>Suggested connections</h2>
+          <p class="section-desc">The matching engine finds credits that correspond to prior debits (e.g. repayments, reimbursements) based on name and amount correlations.</p>
+          {render_suggestions(data['suggestions'])}
+        </section>
+
+        <section style="margin-top: 24px;">
+          <h2>Link transactions manually</h2>
+          {render_manual_linker(data['linkable'])}
+        </section>
+
+        <section style="margin-top: 24px;">
+          <h2>Active connections</h2>
+          {render_active_connections(data['links'])}
+        </section>
+      </div>
+
+      <!-- Tab 4: Review Queue -->
       <div id="pane-review" class="tab-pane">
         <section>
           <h2>Transactions awaiting review</h2>
@@ -679,7 +837,7 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 4: Edit Classifications -->
+      <!-- Tab 5: Edit Classifications -->
       <div id="pane-transactions" class="tab-pane">
         <section>
           <h2>Edit classifications</h2>
@@ -696,7 +854,7 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 5: Search -->
+      <!-- Tab 6: Search -->
       <div id="pane-search" class="tab-pane">
         <section>
           <h2>Credit / debit search</h2>
@@ -711,7 +869,7 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 6: Knowledge Base & Shared -->
+      <!-- Tab 7: Knowledge Base & Shared -->
       <div id="pane-rules" class="tab-pane">
         <div class="grid two">
           <section>

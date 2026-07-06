@@ -154,9 +154,23 @@ def filter_transactions_by_text(rows, query: str):
     return filtered
 
 
+def _row_get(row, key: str, default=0):
+    if hasattr(row, "keys") and key in row.keys():
+        return row[key]
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return default
+
+
 def credit_debit_totals(rows) -> tuple[Decimal, Decimal]:
-    credit_total = sum(Decimal(str(row["credit"] or 0)) for row in rows)
-    debit_total = sum(Decimal(str(row["debit"] or 0)) for row in rows)
+    credit_total = sum(
+        max(Decimal("0"), Decimal(str(row["credit"] or 0)) - Decimal(str(_row_get(row, "credit_offset", 0))))
+        for row in rows
+    )
+    debit_total = sum(
+        max(Decimal("0"), Decimal(str(row["debit"] or 0)) - Decimal(str(_row_get(row, "debit_offset", 0))))
+        for row in rows
+    )
     return credit_total, debit_total
 
 
@@ -191,7 +205,9 @@ def expense_amount_for_row(row, use_my_share: bool) -> Decimal:
     True, returns the user's split share (my_share), otherwise returns the full debit.
     """
     debit = Decimal(str(row["debit"] or 0))
-    if debit <= 0:
+    debit_offset = Decimal(str(_row_get(row, "debit_offset", 0)))
+    net_debit = max(Decimal("0"), debit - debit_offset)
+    if net_debit <= 0:
         return Decimal("0")
     
     # Exclude Transfer and Loan from personal consumption expenses
@@ -201,9 +217,8 @@ def expense_amount_for_row(row, use_my_share: bool) -> Decimal:
         
     if use_my_share:
         my_share = Decimal(str(row["my_share"] or 0))
-        if my_share > 0:
-            return my_share
-    return debit
+        return min(my_share, net_debit)
+    return net_debit
 
 
 def expenses_by_category(rows, use_my_share: bool = False) -> list[tuple[str, Decimal]]:

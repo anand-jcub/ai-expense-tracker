@@ -424,4 +424,24 @@
       }
     }
   }
+
+  // Dynamic manual linker amount pre-population
+  var manualDebit = document.getElementById('manual-debit-select');
+  var manualCredit = document.getElementById('manual-credit-select');
+  var manualAmount = document.getElementById('manual-link-amount');
+  
+  function updateManualLinkAmount() {
+    if (manualDebit && manualCredit && manualAmount) {
+      var dOpt = manualDebit.options[manualDebit.selectedIndex];
+      var cOpt = manualCredit.options[manualCredit.selectedIndex];
+      if (dOpt && cOpt && dOpt.value && cOpt.value) {
+        var dRem = parseFloat(dOpt.getAttribute('data-remaining') || '0');
+        var cRem = parseFloat(cOpt.getAttribute('data-remaining') || '0');
+        manualAmount.value = Math.min(dRem, cRem).toFixed(2);
+      }
+    }
+  }
+  
+  if (manualDebit) manualDebit.addEventListener('change', updateManualLinkAmount);
+  if (manualCredit) manualCredit.addEventListener('change', updateManualLinkAmount);
 })();
