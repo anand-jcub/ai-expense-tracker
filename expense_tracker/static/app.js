@@ -241,6 +241,10 @@
       var catLabels = JSON.parse(categoriesCanvas.getAttribute('data-labels') || '[]');
       var catValues = JSON.parse(categoriesCanvas.getAttribute('data-values') || '[]');
 
+      var catHeight = Math.max(220, catLabels.length * 36) + 'px';
+      categoriesCanvas.parentElement.style.height = catHeight;
+      categoriesCanvas.parentElement.style.minHeight = catHeight;
+
       new Chart(categoriesCanvas, {
         type: 'bar',
         data: {
@@ -279,7 +283,11 @@
             },
             y: {
               grid: { display: false },
-              ticks: { color: textMuted, font: { family: 'Inter', weight: 500 } }
+              ticks: {
+                autoSkip: false,
+                color: textMuted,
+                font: { family: 'Inter', weight: 500 }
+              }
             }
           }
         },
@@ -295,6 +303,10 @@
 
       var merchLabels = JSON.parse(merchantsCanvas.getAttribute('data-labels') || '[]');
       var merchValues = JSON.parse(merchantsCanvas.getAttribute('data-values') || '[]');
+
+      var merchHeight = Math.max(260, merchLabels.length * 36) + 'px';
+      merchantsCanvas.parentElement.style.height = merchHeight;
+      merchantsCanvas.parentElement.style.minHeight = merchHeight;
 
       new Chart(merchantsCanvas, {
         type: 'bar',
@@ -335,7 +347,11 @@
             },
             y: {
               grid: { display: false },
-              ticks: { color: textMuted, font: { family: 'Inter', weight: 500 } }
+              ticks: {
+                autoSkip: false,
+                color: textMuted,
+                font: { family: 'Inter', weight: 500 }
+              }
             }
           }
         },
