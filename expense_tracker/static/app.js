@@ -7,6 +7,13 @@
     'review_sort', 'review_search', 'edit_search', 'person_search'
   ];
 
+  /* ── Diagnostic Global Error Logger ── */
+  window.addEventListener('error', function (event) {
+    var msg = event.message || (event.error && event.error.message) || 'Unknown error';
+    console.error("Uncaught JS error:", event);
+    showToast("JS Error: " + msg, true);
+  });
+
   /* ── Tab Navigation Control ── */
   var tabs = document.querySelectorAll('.tab-link');
   var panes = document.querySelectorAll('.tab-pane');
@@ -40,8 +47,15 @@
     }
     
     // Redraw charts when switching to the dashboard tab so they size correctly
-    if (tabId === 'dashboard' && typeof Chart !== 'undefined') {
-      renderCharts();
+    if (tabId === 'dashboard') {
+      try {
+        if (typeof Chart !== 'undefined') {
+          renderCharts();
+        }
+      } catch (err) {
+        console.error("Chart redraw failed on tab switch:", err);
+        showToast("Chart Switch Error: " + err.message, true);
+      }
     }
   }
 
@@ -98,7 +112,13 @@
     themeToggle.addEventListener('click', function () {
       var currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
       applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
-      renderCharts();
+      try {
+        if (typeof Chart !== 'undefined') {
+          renderCharts();
+        }
+      } catch (err) {
+        showToast("Theme Chart Error: " + err.message, true);
+      }
     });
   }
 
@@ -139,8 +159,6 @@
   }
 
   /* ── Chart.js Rendering Engine ── */
-  var activeCharts = {};
-
   function renderCharts() {
     var isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
     var textMuted = isDark ? '#94a3b8' : '#64748b';
@@ -152,11 +170,13 @@
     // 1. Credit / Debit Donut Chart
     var donutCanvas = document.getElementById('creditDebitChart');
     if (donutCanvas) {
-      if (activeCharts.donut) activeCharts.donut.destroy();
+      var existing = Chart.getChart(donutCanvas);
+      if (existing) existing.destroy();
+      
       var creditVal = parseFloat(donutCanvas.getAttribute('data-credit') || '0');
       var debitVal = parseFloat(donutCanvas.getAttribute('data-debit') || '0');
       
-      activeCharts.donut = new Chart(donutCanvas, {
+      new Chart(donutCanvas, {
         type: 'doughnut',
         data: {
           labels: ['Credits', 'Debits'],
@@ -175,7 +195,8 @@
             tooltip: {
               callbacks: {
                 label: function(context) {
-                  return ' ' + context.label + ': Rs ' + context.raw.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                  var rawVal = context.raw || 0;
+                  return ' ' + context.label + ': Rs ' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
                 }
               }
             }
@@ -188,11 +209,13 @@
     // 2. Expenses by Category Horizontal Bar Chart
     var categoriesCanvas = document.getElementById('categoriesChart');
     if (categoriesCanvas) {
-      if (activeCharts.categories) activeCharts.categories.destroy();
+      var existing = Chart.getChart(categoriesCanvas);
+      if (existing) existing.destroy();
+
       var catLabels = JSON.parse(categoriesCanvas.getAttribute('data-labels') || '[]');
       var catValues = JSON.parse(categoriesCanvas.getAttribute('data-values') || '[]');
 
-      activeCharts.categories = new Chart(categoriesCanvas, {
+      new Chart(categoriesCanvas, {
         type: 'bar',
         data: {
           labels: catLabels,
@@ -212,7 +235,8 @@
             tooltip: {
               callbacks: {
                 label: function(context) {
-                  return ' Rs ' + context.raw.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                  var rawVal = context.raw || 0;
+                  return ' Rs ' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
                 }
               }
             }
@@ -234,11 +258,13 @@
     // 3. Top Merchants Vertical Bar Chart
     var merchantsCanvas = document.getElementById('merchantsChart');
     if (merchantsCanvas) {
-      if (activeCharts.merchants) activeCharts.merchants.destroy();
+      var existing = Chart.getChart(merchantsCanvas);
+      if (existing) existing.destroy();
+
       var merchLabels = JSON.parse(merchantsCanvas.getAttribute('data-labels') || '[]');
       var merchValues = JSON.parse(merchantsCanvas.getAttribute('data-values') || '[]');
 
-      activeCharts.merchants = new Chart(merchantsCanvas, {
+      new Chart(merchantsCanvas, {
         type: 'bar',
         data: {
           labels: merchLabels,
@@ -258,7 +284,8 @@
             tooltip: {
               callbacks: {
                 label: function(context) {
-                  return ' Rs ' + context.raw.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                  var rawVal = context.raw || 0;
+                  return ' Rs ' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
                 }
               }
             }
@@ -278,15 +305,23 @@
     }
   }
 
-  // Initial render when script loads
-  if (typeof Chart !== 'undefined') {
-    renderCharts();
-  }
-
-  // Backup load listener to handle slower script loading
-  window.addEventListener('load', function () {
+  // Initial render try
+  try {
     if (typeof Chart !== 'undefined') {
       renderCharts();
+    }
+  } catch (err) {
+    console.error("Initial chart render failed:", err);
+  }
+
+  // Window load try
+  window.addEventListener('load', function () {
+    try {
+      if (typeof Chart !== 'undefined') {
+        renderCharts();
+      }
+    } catch (err) {
+      console.error("Window load chart render failed:", err);
     }
   });
 
