@@ -167,6 +167,32 @@
     var errorColor = isDark ? '#ef4444' : '#dc2626';
     var accentColor = isDark ? '#6366f1' : '#4f46e5';
 
+    // Custom inline plugin to draw bar values next to horizontal bars
+    var inlineDataLabels = {
+      id: 'inlineDataLabels',
+      afterDatasetsDraw: function (chart) {
+        var ctx = chart.ctx;
+        var isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+        ctx.save();
+        ctx.font = 'bold 11px Inter';
+        ctx.fillStyle = isDark ? '#e2e8f0' : '#1e293b';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+
+        chart.data.datasets.forEach(function (dataset, datasetIndex) {
+          var meta = chart.getDatasetMeta(datasetIndex);
+          meta.data.forEach(function (bar, index) {
+            var value = dataset.data[index];
+            if (value > 0) {
+              var formatted = 'Rs ' + value.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+              ctx.fillText(formatted, bar.x + 8, bar.y);
+            }
+          });
+        });
+        ctx.restore();
+      }
+    };
+
     // 1. Credit / Debit Donut Chart
     var donutCanvas = document.getElementById('creditDebitChart');
     if (donutCanvas) {
@@ -230,6 +256,11 @@
           indexAxis: 'y',
           responsive: true,
           maintainAspectRatio: false,
+          layout: {
+            padding: {
+              right: 90
+            }
+          },
           plugins: {
             legend: { display: false },
             tooltip: {
@@ -251,11 +282,12 @@
               ticks: { color: textMuted, font: { family: 'Inter', weight: 500 } }
             }
           }
-        }
+        },
+        plugins: [inlineDataLabels]
       });
     }
 
-    // 3. Top Merchants Vertical Bar Chart
+    // 3. Top Merchants Horizontal Bar Chart (Y Axis: Merchants, X Axis: Spent amount)
     var merchantsCanvas = document.getElementById('merchantsChart');
     if (merchantsCanvas) {
       var existing = Chart.getChart(merchantsCanvas);
@@ -273,12 +305,18 @@
             backgroundColor: isDark ? 'rgba(99, 102, 241, 0.85)' : 'rgba(79, 70, 229, 0.85)',
             hoverBackgroundColor: accentColor,
             borderRadius: 6,
-            barThickness: 24
+            barThickness: 16
           }]
         },
         options: {
+          indexAxis: 'y',
           responsive: true,
           maintainAspectRatio: false,
+          layout: {
+            padding: {
+              right: 90
+            }
+          },
           plugins: {
             legend: { display: false },
             tooltip: {
@@ -292,15 +330,16 @@
           },
           scales: {
             x: {
-              grid: { display: false },
+              grid: { color: gridColor },
               ticks: { color: textMuted, font: { family: 'Inter' } }
             },
             y: {
-              grid: { color: gridColor },
-              ticks: { color: textMuted, font: { family: 'Inter' } }
+              grid: { display: false },
+              ticks: { color: textMuted, font: { family: 'Inter', weight: 500 } }
             }
           }
-        }
+        },
+        plugins: [inlineDataLabels]
       });
     }
   }
