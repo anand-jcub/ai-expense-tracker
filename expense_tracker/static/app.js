@@ -1,4 +1,4 @@
-/* Preserve dashboard filter state, scroll position, and theme across page reloads. */
+/* SPA Tab switching, Chart.js rendering, Theme Toggle, Scroll & Filter preservation */
 (function () {
   'use strict';
 
@@ -7,13 +7,62 @@
     'review_sort', 'review_search', 'edit_search', 'person_search'
   ];
 
-  /* ── Theme Handling (Dark Mode default) ── */
+  /* ── Tab Navigation Control ── */
+  var tabs = document.querySelectorAll('.tab-link');
+  var panes = document.querySelectorAll('.tab-pane');
+
+  function switchTab(tabId) {
+    if (!tabId) return;
+    tabs.forEach(function (tab) {
+      if (tab.getAttribute('data-tab') === tabId) {
+        tab.classList.add('active');
+      } else {
+        tab.classList.remove('active');
+      }
+    });
+
+    panes.forEach(function (pane) {
+      if (pane.id === 'pane-' + tabId) {
+        pane.classList.add('active');
+      } else {
+        pane.classList.remove('active');
+      }
+    });
+    
+    // Store active tab
+    sessionStorage.setItem('_active_tab', tabId);
+  }
+
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function (e) {
+      var tabId = tab.getAttribute('data-tab');
+      switchTab(tabId);
+    });
+  });
+
+  // Init tab selection on load
+  var initialTab = location.hash ? location.hash.slice(1) : (sessionStorage.getItem('_active_tab') || 'dashboard');
+  // Handle some common aliases/anchors if any
+  if (initialTab === 'person-search') initialTab = 'search';
+  if (initialTab === 'edit-classifications') initialTab = 'transactions';
+  if (initialTab === 'merchant-rules' || initialTab === 'shared-expenses') initialTab = 'rules';
+  switchTab(initialTab);
+
+  // Sync tab switching on hash change
+  window.addEventListener('hashchange', function () {
+    var hash = location.hash.slice(1);
+    if (hash === 'person-search') hash = 'search';
+    if (hash === 'edit-classifications') hash = 'transactions';
+    if (hash === 'merchant-rules' || hash === 'shared-expenses') hash = 'rules';
+    if (hash) switchTab(hash);
+  });
+
+  /* ── Theme Handling ── */
   var themeToggle = document.getElementById('theme-toggle');
   
   function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
-    // Update button icon/aria-label if elements exist
     if (themeToggle) {
       themeToggle.setAttribute('aria-label', 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' mode');
       var moonIcon = themeToggle.querySelector('.moon-icon');
@@ -30,30 +79,216 @@
     }
   }
 
-  // Init theme
   var savedTheme = localStorage.getItem('theme') || 'dark';
   applyTheme(savedTheme);
 
-  // Toggle button listener
   if (themeToggle) {
     themeToggle.addEventListener('click', function () {
       var currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-      var newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-      applyTheme(newTheme);
+      applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
+      // Redraw charts to match new theme colors if Chart.js is loaded
+      renderCharts();
     });
   }
 
-  /* ── GET search forms: scroll back to the containing section ── */
+  /* ── Toast Notification Engine ── */
+  var toastContainer = document.getElementById('toast-container');
+  if (toastContainer) {
+    var message = toastContainer.getAttribute('data-message');
+    var error = toastContainer.getAttribute('data-error');
+    if (message || error) {
+      showToast(message || error, !!error);
+    }
+  }
+
+  function showToast(text, isError) {
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + (isError ? 'error' : 'success');
+    toast.textContent = text;
+    
+    var closeBtn = document.createElement('span');
+    closeBtn.className = 'toast-close';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.onclick = function () { toast.remove(); };
+    toast.appendChild(closeBtn);
+
+    var container = document.getElementById('toast-container');
+    if (container) {
+      container.appendChild(toast);
+      setTimeout(function () {
+        toast.classList.add('show');
+      }, 50);
+
+      // Auto dismiss
+      setTimeout(function () {
+        toast.classList.remove('show');
+        setTimeout(function () { toast.remove(); }, 400);
+      }, 4500);
+    }
+  }
+
+  /* ── Chart.js Rendering Engine ── */
+  var activeCharts = {};
+
+  function renderCharts() {
+    var isDark = (document.documentElement.getAttribute('data-theme') || 'dark') === 'dark';
+    var textMuted = isDark ? '#94a3b8' : '#64748b';
+    var gridColor = isDark ? 'rgba(34, 46, 67, 0.5)' : 'rgba(226, 232, 240, 0.5)';
+    var successColor = isDark ? '#10b981' : '#059669';
+    var errorColor = isDark ? '#ef4444' : '#dc2626';
+    var accentColor = isDark ? '#6366f1' : '#4f46e5';
+
+    // 1. Credit / Debit Donut Chart
+    var donutCanvas = document.getElementById('creditDebitChart');
+    if (donutCanvas) {
+      if (activeCharts.donut) activeCharts.donut.destroy();
+      var creditVal = parseFloat(donutCanvas.getAttribute('data-credit') || '0');
+      var debitVal = parseFloat(donutCanvas.getAttribute('data-debit') || '0');
+      
+      activeCharts.donut = new Chart(donutCanvas, {
+        type: 'doughnut',
+        data: {
+          labels: ['Credits', 'Debits'],
+          datasets: [{
+            data: [creditVal, debitVal],
+            backgroundColor: [successColor, errorColor],
+            borderWidth: 0,
+            hoverOffset: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  return ' ' + context.label + ': Rs ' + context.raw.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                }
+              }
+            }
+          },
+          cutout: '72%'
+        }
+      });
+    }
+
+    // 2. Expenses by Category Horizontal Bar Chart
+    var categoriesCanvas = document.getElementById('categoriesChart');
+    if (categoriesCanvas) {
+      if (activeCharts.categories) activeCharts.categories.destroy();
+      var catLabels = JSON.parse(categoriesCanvas.getAttribute('data-labels') || '[]');
+      var catValues = JSON.parse(categoriesCanvas.getAttribute('data-values') || '[]');
+
+      activeCharts.categories = new Chart(categoriesCanvas, {
+        type: 'bar',
+        data: {
+          labels: catLabels,
+          datasets: [{
+            data: catValues,
+            backgroundColor: accentColor,
+            borderRadius: 6,
+            barThickness: 16
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  return ' Rs ' + context.raw.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: gridColor },
+              ticks: { color: textMuted, font: { family: 'Inter' } }
+            },
+            y: {
+              grid: { display: false },
+              ticks: { color: textMuted, font: { family: 'Inter', weight: 500 } }
+            }
+          }
+        }
+      });
+    }
+
+    // 3. Top Merchants Vertical Bar Chart
+    var merchantsCanvas = document.getElementById('merchantsChart');
+    if (merchantsCanvas) {
+      if (activeCharts.merchants) activeCharts.merchants.destroy();
+      var merchLabels = JSON.parse(merchantsCanvas.getAttribute('data-labels') || '[]');
+      var merchValues = JSON.parse(merchantsCanvas.getAttribute('data-values') || '[]');
+
+      activeCharts.merchants = new Chart(merchantsCanvas, {
+        type: 'bar',
+        data: {
+          labels: merchLabels,
+          datasets: [{
+            data: merchValues,
+            backgroundColor: isDark ? 'rgba(99, 102, 241, 0.85)' : 'rgba(79, 70, 229, 0.85)',
+            hoverBackgroundColor: accentColor,
+            borderRadius: 6,
+            barThickness: 24
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  return ' Rs ' + context.raw.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { color: textMuted, font: { family: 'Inter' } }
+            },
+            y: {
+              grid: { color: gridColor },
+              ticks: { color: textMuted, font: { family: 'Inter' } }
+            }
+          }
+        }
+      });
+    }
+  }
+
+  // Load Chart.js and render if present
+  if (typeof Chart !== 'undefined') {
+    renderCharts();
+  } else {
+    // Fallback if CDN is slow
+    setTimeout(function() {
+      if (typeof Chart !== 'undefined') renderCharts();
+    }, 1000);
+  }
+
+  /* ── GET search forms: append tab hash to action url ── */
   document.querySelectorAll('form[method=get]').forEach(function (form) {
-    var section = form.closest('[id]');
-    if (section && section.id) {
+    var tabLink = form.closest('.tab-pane');
+    if (tabLink) {
+      var tabName = tabLink.id.replace('pane-', '');
       form.addEventListener('submit', function () {
-        form.action = '/#' + section.id;
+        form.action = '/#' + tabName;
       });
     }
   });
 
-  /* ── POST forms: save current filters + scroll target ── */
+  /* ── POST forms: save current filters + scroll target + active tab ── */
   document.querySelectorAll('form[method=post]').forEach(function (form) {
     form.addEventListener('submit', function () {
       var params = new URLSearchParams(location.search);
@@ -62,20 +297,22 @@
         if (params.has(key)) filters[key] = params.get(key);
       });
       sessionStorage.setItem('_ef', JSON.stringify(filters));
-      var section = form.closest('[id]');
-      if (section) sessionStorage.setItem('_es', section.id);
+      
+      var activeTab = document.querySelector('.tab-link.active');
+      if (activeTab) {
+        sessionStorage.setItem('_active_tab', activeTab.getAttribute('data-tab'));
+      }
     });
   });
 
-  /* ── After a POST redirect: restore filters + scroll ── */
+  /* ── After a POST redirect: restore filters + active tab ── */
   var params = new URLSearchParams(location.search);
   var isRedirect = params.has('message') || params.has('error');
 
   if (isRedirect) {
     var raw = sessionStorage.getItem('_ef');
-    var scrollTo = sessionStorage.getItem('_es');
+    var targetTab = sessionStorage.getItem('_active_tab');
     sessionStorage.removeItem('_ef');
-    sessionStorage.removeItem('_es');
 
     if (raw) {
       var filters = JSON.parse(raw);
@@ -87,27 +324,9 @@
         }
       });
       if (changed) {
-        var hash = scrollTo ? '#' + scrollTo : '';
+        var hash = targetTab ? '#' + targetTab : '';
         location.replace('?' + params.toString() + hash);
-        return;
       }
-    }
-
-    if (scrollTo) {
-      var el = document.getElementById(scrollTo);
-      if (el) {
-        if (el.tagName === 'DETAILS') el.open = true;
-        el.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
-  }
-
-  /* ── Open and scroll to anchor on initial load ── */
-  if (location.hash) {
-    var target = document.getElementById(location.hash.slice(1));
-    if (target) {
-      if (target.tagName === 'DETAILS') target.open = true;
-      target.scrollIntoView({ behavior: 'smooth' });
     }
   }
 })();

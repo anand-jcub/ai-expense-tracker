@@ -90,19 +90,45 @@ def render_dashboard_filters(
 def render_credit_debit_pie(totals: dict[str, Decimal]) -> str:
     credit = totals["credit"]
     debit = totals["debit"]
-    total = credit + debit
-    if total <= 0:
+    net = totals["net"]
+    if credit == 0 and debit == 0:
         return '<p class="empty">No credits or debits in this period.</p>'
-    credit_pct = int((credit / total) * 100) if total else 0
-    debit_pct = 100 - credit_pct
     return f"""
     <div class="pie-layout">
-      <div class="pie-chart" style="--credit:{credit_pct};"></div>
-      <div class="pie-legend">
-        <div><span class="legend-dot credit-dot"></span><strong>Credits</strong><span>{money(credit)} ({credit_pct}%)</span></div>
-        <div><span class="legend-dot debit-dot"></span><strong>Debits</strong><span>{money(debit)} ({debit_pct}%)</span></div>
-        <div><span class="legend-dot net-dot"></span><strong>Net</strong><span>{signed_amount(totals['net'])}</span></div>
+      <div class="chart-container" style="position: relative; height: 180px; width: 180px; margin: 0 auto;">
+        <canvas id="creditDebitChart" data-credit="{float(credit)}" data-debit="{float(debit)}"></canvas>
       </div>
+      <div class="pie-legend">
+        <div><span class="legend-dot credit-dot"></span><strong>Credits</strong><span>{money(credit)}</span></div>
+        <div><span class="legend-dot debit-dot"></span><strong>Debits</strong><span>{money(debit)}</span></div>
+        <div><span class="legend-dot net-dot"></span><strong>Net</strong><span>{signed_amount(net)}</span></div>
+      </div>
+    </div>
+    """
+
+
+def render_categories_chart(categories: list[tuple[str, Decimal]]) -> str:
+    import json
+    if not categories:
+        return '<p class="empty">No category data for this period.</p>'
+    labels = [c[0] for c in categories]
+    values = [float(c[1]) for c in categories]
+    return f"""
+    <div class="chart-container" style="position: relative; min-height: 200px; width: 100%;">
+      <canvas id="categoriesChart" data-labels="{esc(json.dumps(labels))}" data-values="{esc(json.dumps(values))}"></canvas>
+    </div>
+    """
+
+
+def render_merchants_chart(merchants: list[tuple[str, Decimal]]) -> str:
+    import json
+    if not merchants:
+        return '<p class="empty">No merchant data for this period.</p>'
+    labels = [m[0] for m in merchants]
+    values = [float(m[1]) for m in merchants]
+    return f"""
+    <div class="chart-container" style="position: relative; min-height: 260px; width: 100%;">
+      <canvas id="merchantsChart" data-labels="{esc(json.dumps(labels))}" data-values="{esc(json.dumps(values))}"></canvas>
     </div>
     """
 
@@ -534,6 +560,7 @@ def page(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
   <link rel="stylesheet" href="/style.css?v=3">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
   <header>
@@ -548,61 +575,162 @@ def page(
       <svg class="moon-icon" viewBox="0 0 24 24" style="display:none;"><path d="M12.3 22h-.1c-5.5 0-10-4.5-10-10 0-4.8 3.5-9 8.3-9.8.6-.1 1.2.3 1.3.9.1.6-.2 1.2-.8 1.4-3.4 1-5.8 4.1-5.8 7.6 0 4.4 3.6 8 8 8 3.5 0 6.6-2.4 7.6-5.8.2-.6.8-.9 1.4-.8.6.1 1 .7.9 1.3-.8 4.8-5 8.2-9.9 8.2z"/></svg>
     </button>
   </header>
-  <main>
-    {message_html}
-    {error_html}
-    {render_dashboard_filters(start_date, end_date, min_date, max_date, exclude_business, use_my_share)}
-    <div class="grid metrics">
-      <div class="metric"><span>Period credits</span><strong>{money(period_totals['credit'])}</strong></div>
-      <div class="metric"><span>Period debits</span><strong>{money(period_totals['debit'])}</strong></div>
-      <div class="metric"><span>Expense basis</span><strong>{money(period_totals['expense'])}</strong></div>
-      <div class="metric"><span>Awaiting review</span><strong>{len(data['pending'])}</strong></div>
-    </div>
+  
+  <div class="app-container">
+    <aside class="sidebar">
+      <nav class="nav-tabs" aria-label="Main Navigation">
+        <a href="#dashboard" class="tab-link active" data-tab="dashboard">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+          <span>Dashboard</span>
+        </a>
+        <a href="#review" class="tab-link" data-tab="review">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
+          <span>Review Queue</span>
+          <span class="tab-badge warn" id="review-count-badge">{len(data['pending'])}</span>
+        </a>
+        <a href="#transactions" class="tab-link" data-tab="transactions">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+          <span>Edit Classifications</span>
+        </a>
+        <a href="#search" class="tab-link" data-tab="search">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          <span>Credit / Debit Search</span>
+        </a>
+        <a href="#rules" class="tab-link" data-tab="rules">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+          <span>Knowledge & Shared</span>
+        </a>
+      </nav>
+    </aside>
 
-    <section>
-      <h2>Import weekly SBI statement</h2>
-      <form class="import" method="post" action="/import" enctype="multipart/form-data">
-        <label>Statement PDF <input type="file" name="statement" accept="application/pdf" required></label>
-        <label>Password <input type="password" name="password" autocomplete="off"></label>
-        <button type="submit">Import</button>
-      </form>
-    </section>
+    <main class="main-content">
+      <div id="toast-container" class="toast-container" data-message="{esc(message)}" data-error="{esc(error)}"></div>
 
-    <div style="margin-top:16px;">
-      {render_manual_transaction_form()}
-    </div>
+      <!-- Tab 1: Dashboard -->
+      <div id="pane-dashboard" class="tab-pane active">
+        {render_dashboard_filters(start_date, end_date, min_date, max_date, exclude_business, use_my_share)}
+        
+        <div class="grid metrics">
+          <div class="metric"><span>Period credits</span><strong>{money(period_totals['credit'])}</strong></div>
+          <div class="metric"><span>Period debits</span><strong>{money(period_totals['debit'])}</strong></div>
+          <div class="metric"><span>Expense basis</span><strong>{money(period_totals['expense'])}</strong></div>
+          <div class="metric"><span>Awaiting review</span><strong>{len(data['pending'])}</strong></div>
+        </div>
 
-    <div class="grid two" style="margin-top:16px;">
-      <section>
-        <h2>Total credits / debits</h2>
-        {render_credit_debit_pie(period_totals)}
-      </section>
-      <section>
-        <h2>Expenses by category</h2>
-        {bar_list(period_categories, category_max)}
-      </section>
-    </div>
+        <div class="grid two">
+          <section>
+            <h2>Import weekly SBI statement</h2>
+            <form class="import" method="post" action="/import" enctype="multipart/form-data">
+              <label>Statement PDF <input type="file" name="statement" accept="application/pdf" required></label>
+              <label>Password <input type="password" name="password" autocomplete="off"></label>
+              <button type="submit">Import</button>
+            </form>
+          </section>
+          {render_manual_transaction_form()}
+        </div>
 
-    <section style="margin-top:16px;">
-      <h2>Top merchants</h2>
-      {bar_list(period_merchants, merchant_max)}
-    </section>
+        <div class="grid two" style="margin-top:24px;">
+          <section>
+            <h2>Total credits / debits</h2>
+            {render_credit_debit_pie(period_totals)}
+          </section>
+          <section>
+            <h2>Expenses by category</h2>
+            {render_categories_chart(period_categories)}
+          </section>
+        </div>
 
-    {person_section}
-    {review_section}
-    {edit_section}
-    {rules_section}
-    {shared_section}
+        <section style="margin-top:24px;">
+          <h2>Top merchants</h2>
+          {render_merchants_chart(period_merchants)}
+        </section>
 
-    <section style="margin-top:16px;">
-      <h2>Exports</h2>
-      <div class="actions">
-        <a class="button" href="/export.csv">Download CSV</a>
-        <a class="button" href="/export.json">Download JSON</a>
+        <section style="margin-top:24px;">
+          <h2>Exports</h2>
+          <div class="actions">
+            <a class="button" href="/export.csv">Download CSV</a>
+            <a class="button" href="/export.json">Download JSON</a>
+          </div>
+          <p class="empty">Original transactions stay immutable. Reviews and learned merchant mappings are stored separately.</p>
+        </section>
       </div>
-      <p class="empty">Original transactions stay immutable. Reviews and learned merchant mappings are stored separately.</p>
-    </section>
-  </main>
+
+      <!-- Tab 2: Review Queue -->
+      <div id="pane-review" class="tab-pane">
+        <section>
+          <h2>Transactions awaiting review</h2>
+          {review_sort_controls(review_sort, review_search)}
+          {review_search_controls(review_search, review_sort, len(data['pending']), len(filtered_review))}
+          <form method="post" action="/review" class="review-batch-form">
+            <div style="overflow-x: auto;">
+              <table>
+                <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Confirmation</th></tr></thead>
+                <tbody>{render_review_rows(pending_review)}</tbody>
+              </table>
+            </div>
+            {review_batch_actions(pending_review)}
+          </form>
+        </section>
+      </div>
+
+      <!-- Tab 3: Edit Classifications -->
+      <div id="pane-transactions" class="tab-pane">
+        <section>
+          <h2>Edit classifications</h2>
+          {edit_search_controls(edit_search, len(editable_all), len(filtered_edit), len(editable_rows))}
+          <form method="post" action="/edit-classifications" class="review-batch-form">
+            <div style="overflow-x: auto;">
+              <table>
+                <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
+                <tbody>{render_edit_rows(editable_rows)}</tbody>
+              </table>
+            </div>
+            {edit_batch_actions(editable_rows)}
+          </form>
+        </section>
+      </div>
+
+      <!-- Tab 4: Search -->
+      <div id="pane-search" class="tab-pane">
+        <section>
+          <h2>Credit / debit search</h2>
+          {person_search_controls(person_search, len(person_matches))}
+          {render_credit_debit_graph(person_matches, person_search)}
+          <div style="overflow-x: auto;">
+            <table>
+              <thead><tr><th>Date</th><th>Merchant / text</th><th>Credit</th><th>Debit</th><th>Amount</th><th>Category</th></tr></thead>
+              <tbody>{render_person_transaction_rows(person_matches)}</tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- Tab 5: Knowledge Base & Shared -->
+      <div id="pane-rules" class="tab-pane">
+        <div class="grid two">
+          <section>
+            <h2>Merchant knowledge base</h2>
+            <div style="overflow-x: auto;">
+              <table>
+                <thead><tr><th>Merchant</th><th>Category</th><th>Type</th><th>Split</th><th>Uses</th></tr></thead>
+                <tbody>{render_rules(data['rules'])}</tbody>
+              </table>
+            </div>
+          </section>
+          <section>
+            <h2>Shared expenses</h2>
+            <div style="overflow-x: auto;">
+              <table>
+                <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th></tr></thead>
+                <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td></tr>" for r in data['shared']) or '<tr><td colspan="6" class="empty">No shared expenses yet.</td></tr>'}</tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+  
   <script src="/app.js?v=3"></script>
 </body>
 </html>
