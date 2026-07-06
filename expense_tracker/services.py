@@ -13,6 +13,7 @@ CATEGORIES = [
     "Utilities",
     "Shopping",
     "Health",
+    "Personal Care",
     "Rent",
     "Travel",
     "Business",
