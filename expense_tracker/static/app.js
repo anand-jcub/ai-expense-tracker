@@ -31,10 +31,23 @@
     
     // Store active tab
     sessionStorage.setItem('_active_tab', tabId);
+
+    // Update URL hash without jumping/scrolling
+    if (history.pushState) {
+      history.pushState(null, null, '#' + tabId);
+    } else {
+      location.hash = '#' + tabId;
+    }
+    
+    // Redraw charts when switching to the dashboard tab so they size correctly
+    if (tabId === 'dashboard' && typeof Chart !== 'undefined') {
+      renderCharts();
+    }
   }
 
   tabs.forEach(function (tab) {
     tab.addEventListener('click', function (e) {
+      e.preventDefault();
       var tabId = tab.getAttribute('data-tab');
       switchTab(tabId);
     });
@@ -42,7 +55,6 @@
 
   // Init tab selection on load
   var initialTab = location.hash ? location.hash.slice(1) : (sessionStorage.getItem('_active_tab') || 'dashboard');
-  // Handle some common aliases/anchors if any
   if (initialTab === 'person-search') initialTab = 'search';
   if (initialTab === 'edit-classifications') initialTab = 'transactions';
   if (initialTab === 'merchant-rules' || initialTab === 'shared-expenses') initialTab = 'rules';
@@ -86,7 +98,6 @@
     themeToggle.addEventListener('click', function () {
       var currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
       applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
-      // Redraw charts to match new theme colors if Chart.js is loaded
       renderCharts();
     });
   }
@@ -267,45 +278,39 @@
     }
   }
 
-  // Load Chart.js and render if present
+  // Initial render when script loads
   if (typeof Chart !== 'undefined') {
     renderCharts();
-  } else {
-    // Fallback if CDN is slow
-    setTimeout(function() {
-      if (typeof Chart !== 'undefined') renderCharts();
-    }, 1000);
   }
 
-  /* ── GET search forms: append tab hash to action url ── */
-  document.querySelectorAll('form[method=get]').forEach(function (form) {
-    var tabLink = form.closest('.tab-pane');
-    if (tabLink) {
-      var tabName = tabLink.id.replace('pane-', '');
-      form.addEventListener('submit', function () {
-        form.action = '/#' + tabName;
-      });
+  // Backup load listener to handle slower script loading
+  window.addEventListener('load', function () {
+    if (typeof Chart !== 'undefined') {
+      renderCharts();
     }
   });
 
-  /* ── POST forms: save current filters + scroll target + active tab ── */
-  document.querySelectorAll('form[method=post]').forEach(function (form) {
+  /* ── Form submit handlers: always preserve active tab ── */
+  document.querySelectorAll('form').forEach(function (form) {
     form.addEventListener('submit', function () {
-      var params = new URLSearchParams(location.search);
-      var filters = {};
-      FILTER_KEYS.forEach(function (key) {
-        if (params.has(key)) filters[key] = params.get(key);
-      });
-      sessionStorage.setItem('_ef', JSON.stringify(filters));
-      
       var activeTab = document.querySelector('.tab-link.active');
       if (activeTab) {
         sessionStorage.setItem('_active_tab', activeTab.getAttribute('data-tab'));
       }
+      
+      // For POST requests, also store filter queries
+      if (form.method.toLowerCase() === 'post') {
+        var params = new URLSearchParams(location.search);
+        var filters = {};
+        FILTER_KEYS.forEach(function (key) {
+          if (params.has(key)) filters[key] = params.get(key);
+        });
+        sessionStorage.setItem('_ef', JSON.stringify(filters));
+      }
     });
   });
 
-  /* ── After a POST redirect: restore filters + active tab ── */
+  /* ── After a redirect: restore filter parameters ── */
   var params = new URLSearchParams(location.search);
   var isRedirect = params.has('message') || params.has('error');
 
