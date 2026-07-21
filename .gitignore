@@ -22,3 +22,9 @@ outputs/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Temporary logs and text chunks
+*.log
+chunks_*.txt
+Users/
+

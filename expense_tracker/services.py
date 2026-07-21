@@ -236,10 +236,13 @@ def expenses_by_category(rows, use_my_share: bool = False) -> list[tuple[str, De
 def dashboard_totals(rows, use_my_share: bool = False) -> dict[str, Decimal]:
     credit_total, debit_total = credit_debit_totals(rows)
     expense_total = sum(expense_amount_for_row(row, use_my_share) for row in rows)
+    # expense_share is always the personal-spend view (my_share), regardless of use_my_share toggle
+    expense_share = sum(expense_amount_for_row(row, use_my_share=True) for row in rows)
     return {
         "credit": credit_total,
         "debit": debit_total,
         "expense": expense_total,
+        "expense_share": expense_share,
         "net": credit_total - debit_total,
     }
 
@@ -264,3 +267,117 @@ def active_period_label(start_date: str, end_date: str) -> str:
     if end_date:
         return f"Until {end_date}"
     return "All transactions"
+
+
+def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> list[dict]:
+    """Compute how much each partner owes the current user (or vice versa).
+
+    Returns a list of dicts: {username, they_owe_you, you_owe_them, net}.
+    Positive net = they owe you. Negative net = you owe them.
+    """
+    results = []
+    for partner in all_users:
+        if partner.lower() == current_user.lower():
+            continue
+        try:
+            # Transactions the current user shared with this partner (user paid, partner owes share)
+            rows = conn.execute(
+                """
+                SELECT c.my_share, c.expense_type, c.split_ratio
+                FROM transactions t
+                JOIN classifications c ON c.transaction_id = t.id
+                WHERE t.debit > 0
+                  AND c.expense_type = 'Shared'
+                  AND c.shared_with = ?
+                  AND (t.uploaded_by = ? OR t.uploaded_by IS NULL)
+                """,
+                (partner.lower(), current_user.lower()),
+            ).fetchall()
+
+            # Amount current user paid that partner should contribute
+            they_owe_me = sum(
+                max(Decimal("0"), Decimal(str(r["debit"] if "debit" in r.keys() else 0)))
+                for r in rows
+            )
+            # Simpler: use my_share complement
+            they_owe_me = sum(
+                Decimal(str(r["my_share"] or 0))
+                for r in rows
+            )
+
+            # Transactions partner shared with current user (partner paid, user owes share)
+            partner_rows = conn.execute(
+                """
+                SELECT c.my_share
+                FROM transactions t
+                JOIN classifications c ON c.transaction_id = t.id
+                WHERE t.uploaded_by = ?
+                  AND c.expense_type = 'Shared'
+                  AND c.shared_with = ?
+                """,
+                (partner.lower(), current_user.lower()),
+            ).fetchall()
+            i_owe_them = sum(Decimal(str(r["my_share"] or 0)) for r in partner_rows)
+
+            net = they_owe_me - i_owe_them
+            if they_owe_me > 0 or i_owe_them > 0:
+                results.append({
+                    "username": partner,
+                    "they_owe_you": they_owe_me,
+                    "you_owe_them": i_owe_them,
+                    "net": net,
+                })
+        except Exception:
+            pass
+    return results
+
+
+def get_household_balances(conn, current_user: str) -> list[dict]:
+    """Return shared expense summaries grouped by partner."""
+    return compute_partner_balances(conn, current_user, [])
+
+
+def credits_by_category(rows) -> list[tuple[str, Decimal]]:
+    """Compute credit totals by category."""
+    by_cat: dict[str, Decimal] = {}
+    for row in rows:
+        credit = max(Decimal("0"), Decimal(str(row["credit"] or 0)) - Decimal(str(_row_get(row, "credit_offset", 0))))
+        if credit <= 0:
+            continue
+        cat = row["category"] or "Uncategorized"
+        by_cat[cat] = by_cat.get(cat, Decimal("0")) + credit
+    return sorted(by_cat.items(), key=lambda x: x[1], reverse=True)
+
+
+def debits_by_category(rows) -> list[tuple[str, Decimal]]:
+    """Compute debit totals by category."""
+    by_cat: dict[str, Decimal] = {}
+    for row in rows:
+        debit = max(Decimal("0"), Decimal(str(row["debit"] or 0)) - Decimal(str(_row_get(row, "debit_offset", 0))))
+        if debit <= 0:
+            continue
+        cat = row["category"] or "Uncategorized"
+        by_cat[cat] = by_cat.get(cat, Decimal("0")) + debit
+    return sorted(by_cat.items(), key=lambda x: x[1], reverse=True)
+
+
+def credits_by_merchant(rows) -> list[tuple[str, Decimal]]:
+    by_m: dict[str, Decimal] = {}
+    for row in rows:
+        credit = max(Decimal("0"), Decimal(str(row["credit"] or 0)) - Decimal(str(_row_get(row, "credit_offset", 0))))
+        if credit <= 0:
+            continue
+        m = row["merchant_display"] or "Unknown"
+        by_m[m] = by_m.get(m, Decimal("0")) + credit
+    return sorted(by_m.items(), key=lambda x: x[1], reverse=True)[:10]
+
+
+def debits_by_merchant(rows) -> list[tuple[str, Decimal]]:
+    by_m: dict[str, Decimal] = {}
+    for row in rows:
+        debit = max(Decimal("0"), Decimal(str(row["debit"] or 0)) - Decimal(str(_row_get(row, "debit_offset", 0))))
+        if debit <= 0:
+            continue
+        m = row["merchant_display"] or "Unknown"
+        by_m[m] = by_m.get(m, Decimal("0")) + debit
+    return sorted(by_m.items(), key=lambda x: x[1], reverse=True)[:10]

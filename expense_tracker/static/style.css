@@ -268,10 +268,19 @@ section:hover, .metric:hover {
   margin-top: 8px;
 }
 
-.metric:nth-child(1) strong { color: var(--success); }
-.metric:nth-child(2) strong { color: var(--error); }
-.metric:nth-child(3) strong { color: var(--accent); }
-.metric:nth-child(4) strong { color: var(--warn); }
+/* Active states for clickable metric cards – semantic color glow */
+#card-credits.active {
+  border-color: var(--success) !important;
+  background: var(--success-glow) !important;
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.18) !important;
+}
+
+#card-debits.active,
+#card-expenses.active {
+  border-color: var(--error) !important;
+  background: var(--error-glow, rgba(239, 68, 68, 0.08)) !important;
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.18) !important;
+}
 
 h2 {
   font-family: 'Outfit', sans-serif;
@@ -1097,4 +1106,156 @@ td span {
 .rules-search-wrapper input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+/* ── Auth pages ───────────────────────────────────────────────────────── */
+body.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  animation: fadeUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.auth-card h1 {
+  font-family: 'Outfit', sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  background: linear-gradient(135deg, var(--ink) 30%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-align: center;
+}
+
+.auth-subtitle {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  margin: 0 0 24px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.auth-form input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.auth-form button {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  margin-top: 4px;
+  border-radius: 10px;
+}
+
+.auth-link {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 20px;
+}
+
+.auth-link a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.auth-link a:hover {
+  text-decoration: underline;
+}
+
+/* ── User badge (top-right in header) ────────────────────────────────── */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.user-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 4px 12px 4px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.logout-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.logout-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--error);
+  color: var(--error);
+  transform: none;
+  box-shadow: none;
+}
+
+/* CSS variables for debit/credit colors (for inline style references) */
+:root {
+  --debit-color: #ef4444;
+  --credit-color: #10b981;
 }

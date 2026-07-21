@@ -238,8 +238,20 @@
       var existing = Chart.getChart(categoriesCanvas);
       if (existing) existing.destroy();
 
-      var catLabels = JSON.parse(categoriesCanvas.getAttribute('data-labels') || '[]');
-      var catValues = JSON.parse(categoriesCanvas.getAttribute('data-values') || '[]');
+      // Determine active tab for dynamic data loading
+      var activeTab = 'expenses';
+      if (document.getElementById('card-credits') && document.getElementById('card-credits').classList.contains('active')) {
+        activeTab = 'credits';
+      } else if (document.getElementById('card-debits') && document.getElementById('card-debits').classList.contains('active')) {
+        activeTab = 'debits';
+      }
+
+      var catLabels = JSON.parse(categoriesCanvas.getAttribute('data-labels-' + activeTab) || '[]');
+      var catValues = JSON.parse(categoriesCanvas.getAttribute('data-values-' + activeTab) || '[]');
+      
+      // Determine chart bar color based on tab
+      var barColor = activeTab === 'credits' ? successColor : errorColor;
+      if (activeTab === 'expenses') barColor = accentColor; // or keep errorColor
 
       var catHeight = Math.max(220, catLabels.length * 36) + 'px';
       categoriesCanvas.parentElement.style.height = catHeight;
@@ -251,7 +263,7 @@
           labels: catLabels,
           datasets: [{
             data: catValues,
-            backgroundColor: accentColor,
+            backgroundColor: barColor,
             borderRadius: 6,
             barThickness: 16
           }]
@@ -301,8 +313,8 @@
       var existing = Chart.getChart(merchantsCanvas);
       if (existing) existing.destroy();
 
-      var merchLabels = JSON.parse(merchantsCanvas.getAttribute('data-labels') || '[]');
-      var merchValues = JSON.parse(merchantsCanvas.getAttribute('data-values') || '[]');
+      var merchLabels = JSON.parse(merchantsCanvas.getAttribute('data-labels-' + activeTab) || '[]');
+      var merchValues = JSON.parse(merchantsCanvas.getAttribute('data-values-' + activeTab) || '[]');
 
       var merchHeight = Math.max(260, merchLabels.length * 36) + 'px';
       merchantsCanvas.parentElement.style.height = merchHeight;
@@ -380,7 +392,7 @@
     }
   });
 
-  /* ── Form submit handlers: always preserve active tab ── */
+  /* ── Form submit handlers: always preserve active tab and filters ── */
   document.querySelectorAll('form').forEach(function (form) {
     form.addEventListener('submit', function () {
       var activeTab = document.querySelector('.tab-link.active');
@@ -388,14 +400,27 @@
         sessionStorage.setItem('_active_tab', activeTab.getAttribute('data-tab'));
       }
       
-      // For POST requests, also store filter queries
+      var params = new URLSearchParams(location.search);
+      var filters = {};
+      FILTER_KEYS.forEach(function (key) {
+        if (params.has(key)) filters[key] = params.get(key);
+      });
+
+      // For POST requests, store filter queries to restore after redirect
       if (form.method.toLowerCase() === 'post') {
-        var params = new URLSearchParams(location.search);
-        var filters = {};
-        FILTER_KEYS.forEach(function (key) {
-          if (params.has(key)) filters[key] = params.get(key);
-        });
         sessionStorage.setItem('_ef', JSON.stringify(filters));
+      } 
+      // For GET requests, inject missing filters as hidden inputs so they aren't lost
+      else if (form.method.toLowerCase() === 'get') {
+        Object.keys(filters).forEach(function(key) {
+          if (!form.querySelector('input[name="' + key + '"]')) {
+            var hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = key;
+            hidden.value = filters[key];
+            form.appendChild(hidden);
+          }
+        });
       }
     });
   });
@@ -454,4 +479,40 @@
       row.style.display = text.includes(query) ? '' : 'none';
     });
   }
+
+  /* ── Dashboard Metric Card Tab Switcher ── */
+  window.switchDashboardTab = function (type) {
+    // Update active classes on the 3 metric cards
+    ['credits', 'debits', 'expenses'].forEach(function (t) {
+      var card = document.getElementById('card-' + t);
+      if (card) {
+        if (t === type) {
+          card.classList.add('active');
+        } else {
+          card.classList.remove('active');
+        }
+      }
+    });
+
+    // Update chart section headings based on selected card
+    var categoryTitle = document.getElementById('chart-category-title');
+    var merchantTitle = document.getElementById('chart-merchant-title');
+    if (categoryTitle && merchantTitle) {
+      if (type === 'credits') {
+        categoryTitle.innerText = 'Credits by category';
+        merchantTitle.innerText = 'Top credit sources';
+      } else if (type === 'debits') {
+        categoryTitle.innerText = 'Debits by category';
+        merchantTitle.innerText = 'Top merchants (Debits)';
+      } else {
+        categoryTitle.innerText = 'Expenses by category';
+        merchantTitle.innerText = 'Top merchants';
+      }
+    }
+
+    // Re-render charts to reflect active tab context
+    if (typeof renderCharts === 'function') {
+      renderCharts();
+    }
+  };
 })();

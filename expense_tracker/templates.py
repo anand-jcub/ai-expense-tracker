@@ -11,7 +11,11 @@ from .services import (
     EXPENSE_TYPES,
     active_period_label,
     credit_debit_totals,
+    credits_by_category,
+    credits_by_merchant,
     date_bounds,
+    debits_by_category,
+    debits_by_merchant,
     expenses_by_category,
     dashboard_totals,
     filter_dashboard_rows,
@@ -24,6 +28,59 @@ from .services import (
     split_display,
     top_merchants_from_rows,
 )
+
+
+def login_page(message: str | None = None, error: str | None = None) -> bytes:
+    """Render the login page."""
+    msg_html = f'<div class="toast success">{esc(message)}</div>' if message else ""
+    err_html = f'<div class="toast error">{esc(error)}</div>' if error else ""
+    body = f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Login — Expense Tracker</title>
+<link rel="stylesheet" href="/style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body class="auth-page">
+  <div class="auth-card">
+    <h1>Expense Tracker</h1>
+    <p class="auth-subtitle">Sign in to your account</p>
+    {msg_html}{err_html}
+    <form method="post" action="/login" class="auth-form">
+      <label>Username<input type="text" name="username" autofocus required autocomplete="username"></label>
+      <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+      <button type="submit">Sign in</button>
+    </form>
+    <p class="auth-link">No account? <a href="/register">Register</a></p>
+  </div>
+</body></html>"""
+    return body.encode("utf-8")
+
+
+def register_page(message: str | None = None, error: str | None = None) -> bytes:
+    """Render the registration page."""
+    msg_html = f'<div class="toast success">{esc(message)}</div>' if message else ""
+    err_html = f'<div class="toast error">{esc(error)}</div>' if error else ""
+    body = f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Register — Expense Tracker</title>
+<link rel="stylesheet" href="/style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body class="auth-page">
+  <div class="auth-card">
+    <h1>Expense Tracker</h1>
+    <p class="auth-subtitle">Create an account</p>
+    {msg_html}{err_html}
+    <form method="post" action="/register" class="auth-form">
+      <label>Username<input type="text" name="username" autofocus required autocomplete="username"></label>
+      <label>Password<input type="password" name="password" required autocomplete="new-password"></label>
+      <label>Confirm password<input type="password" name="confirm_password" required autocomplete="new-password"></label>
+      <button type="submit">Create account</button>
+    </form>
+    <p class="auth-link">Already registered? <a href="/login">Sign in</a></p>
+  </div>
+</body></html>"""
+    return body.encode("utf-8")
 
 
 def money(value) -> str:
@@ -67,7 +124,7 @@ def render_dashboard_filters(
     min_date: str,
     max_date: str,
     exclude_business: bool,
-    use_my_share: bool,
+    use_my_share: bool = False,
 ) -> str:
     return f"""
     <section class="dashboard-controls">
@@ -77,8 +134,7 @@ def render_dashboard_filters(
       <form method="get" action="/" class="period-form">
         <label>Start date <input type="date" name="start_date" value="{esc(start_date)}" min="{esc(min_date)}" max="{esc(max_date)}"></label>
         <label>End date <input type="date" name="end_date" value="{esc(end_date)}" min="{esc(min_date)}" max="{esc(max_date)}"></label>
-        <label class="check"><input type="checkbox" name="exclude_business" value="1" {"checked" if exclude_business else ""}> Exclude Business</label>
-        <label class="check"><input type="checkbox" name="use_my_share" value="1" {"checked" if use_my_share else ""}> Use my share for split debits</label>
+        <label class="check"><input type="checkbox" name="exclude_business" value="1" {"checked" if exclude_business else ""}> Exclude business</label>
         <button type="submit">Apply</button>
         <a class="button subtle" href="/">Reset</a>
       </form>
@@ -106,28 +162,34 @@ def render_credit_debit_pie(totals: dict[str, Decimal]) -> str:
     """
 
 
-def render_categories_chart(categories: list[tuple[str, Decimal]]) -> str:
+def render_categories_chart(categories_dict: dict[str, list[tuple[str, Decimal]]]) -> str:
     import json
-    if not categories:
-        return '<p class="empty">No category data for this period.</p>'
-    labels = [c[0] for c in categories]
-    values = [float(c[1]) for c in categories]
+    data_attrs = []
+    for key in ['expenses', 'debits', 'credits']:
+        categories = categories_dict.get(key, [])
+        labels = [c[0] for c in categories]
+        values = [float(c[1]) for c in categories]
+        data_attrs.append(f'data-labels-{key}="{esc(json.dumps(labels))}" data-values-{key}="{esc(json.dumps(values))}"')
+    
     return f"""
     <div class="chart-container" style="position: relative; min-height: 200px; width: 100%;">
-      <canvas id="categoriesChart" data-labels="{esc(json.dumps(labels))}" data-values="{esc(json.dumps(values))}"></canvas>
+      <canvas id="categoriesChart" {' '.join(data_attrs)}></canvas>
     </div>
     """
 
 
-def render_merchants_chart(merchants: list[tuple[str, Decimal]]) -> str:
+def render_merchants_chart(merchants_dict: dict[str, list[tuple[str, Decimal]]]) -> str:
     import json
-    if not merchants:
-        return '<p class="empty">No merchant data for this period.</p>'
-    labels = [m[0] for m in merchants]
-    values = [float(m[1]) for m in merchants]
+    data_attrs = []
+    for key in ['expenses', 'debits', 'credits']:
+        merchants = merchants_dict.get(key, [])
+        labels = [m[0] for m in merchants]
+        values = [float(m[1]) for m in merchants]
+        data_attrs.append(f'data-labels-{key}="{esc(json.dumps(labels))}" data-values-{key}="{esc(json.dumps(values))}"')
+    
     return f"""
     <div class="chart-container" style="position: relative; min-height: 260px; width: 100%;">
-      <canvas id="merchantsChart" data-labels="{esc(json.dumps(labels))}" data-values="{esc(json.dumps(values))}"></canvas>
+      <canvas id="merchantsChart" {' '.join(data_attrs)}></canvas>
     </div>
     """
 
@@ -158,6 +220,48 @@ def render_manual_transaction_form() -> str:
       </form>
     </section>
     """
+
+
+def render_money_flows_view(transactions: list[dict]) -> str:
+    # Filter for transfers and loans
+    money_flows = [t for t in transactions if t['expense_type'] in ('Transfer', 'Loan')]
+    
+    if not money_flows:
+        return '<p class="empty">No money flow data available (Transfers & Loans).</p>'
+        
+    items_html = []
+    for f in money_flows[:40]:
+        date_str = f["txn_date"]
+        merchant = f["merchant_display"]
+        amount = f["amount_signed"]
+        desc = f["description"]
+        category = f["category"]
+        expense_type = f["expense_type"]
+        
+        flow_class = "credit-flow" if amount > 0 else "debit-flow"
+        cat_badge_html = f'<span class="rel-row-badge rel-cat">{esc(category)}</span>' if category else ""
+        
+        items_html.append(
+            f"""
+            <div class="timeline-node {flow_class}" style="margin-bottom:12px; padding:12px; border-left:4px solid {'var(--success)' if amount > 0 else 'var(--error)'}; background:var(--surface-color); border-radius:4px;">
+              <div class="node-date" style="font-size:12px; color:var(--muted);">{esc(date_str)}</div>
+              <div class="node-content" style="display:flex; justify-content:space-between; align-items:center;">
+                <div class="node-title">
+                  <strong style="display:block; margin-top:4px;">{esc(merchant)}</strong>
+                  <span style="font-size:12px; color:var(--muted);">{esc(desc)}</span>
+                </div>
+                <div class="node-amount" style="font-weight:600; color:{'var(--success)' if amount > 0 else 'var(--error)'};">
+                  {money(amount)}
+                </div>
+              </div>
+              <div class="node-meta" style="margin-top:8px;">
+                {cat_badge_html} <span class="rel-row-badge rel-type" style="margin-left:8px; font-size:11px; background:var(--border-color); padding:2px 6px; border-radius:4px;">{esc(expense_type)}</span>
+              </div>
+            </div>
+            """
+        )
+        
+    return f'<div class="timeline" style="margin-top:16px;">{"".join(items_html)}</div>'
 
 
 def collapsible_section(section_id: str, title: str, body: str, meta: str = "", open_section: bool = False) -> str:
@@ -616,14 +720,33 @@ def page(
     end_date: str = "",
     exclude_business: bool = False,
     use_my_share: bool = False,
+    current_user: str | None = None,
+    all_users: list[str] | None = None,
+    partner_balances: list[dict] | None = None,
 ) -> bytes:
     """Assemble the full dashboard HTML page from pre-fetched data."""
+    all_users = all_users or []
+    partner_balances = partner_balances or []
     review_sort = "oldest" if review_sort == "oldest" else "newest"
     review_search = review_search.strip()
     edit_search = edit_search.strip()
     person_search = person_search.strip()
     filtered_review = filter_review_rows(data["pending"], review_search)
     pending_review = sort_review_rows(filtered_review, review_sort)
+    # Split review queue by debit/credit
+    debit_review = [r for r in pending_review if r["debit"] and float(r["debit"] or 0) > 0]
+    credit_review = [r for r in pending_review if r["credit"] and float(r["credit"] or 0) > 0]
+    # Filter by selected date period
+    def _in_period(r):
+        txn_date = str(r["txn_date"] or "")
+        if start_date and txn_date < start_date:
+            return False
+        if end_date and txn_date > end_date:
+            return False
+        return True
+    debit_review = [r for r in debit_review if _in_period(r)]
+    credit_review = [r for r in credit_review if _in_period(r)]
+    pending_badge_count = len(debit_review)
     editable_all = [row for row in data["transactions"] if row["status"] != "needs_review"]
     filtered_edit = filter_editable_rows(data["transactions"], edit_search)
     editable_rows = filtered_edit if edit_search else filtered_edit[:25]
@@ -637,10 +760,16 @@ def page(
     end_date = end_date if end_date else max_date
     period_rows = filter_dashboard_rows(data["transactions"], start_date, end_date, exclude_business)
     period_totals = dashboard_totals(period_rows, use_my_share)
-    period_categories = expenses_by_category(period_rows, use_my_share)
-    category_max = max((amount for _, amount in period_categories), default=Decimal("1"))
-    period_merchants = top_merchants_from_rows(period_rows, use_my_share)
-    merchant_max = max((amount for _, amount in period_merchants), default=Decimal("1"))
+    period_categories = {
+        'expenses': expenses_by_category(period_rows, use_my_share=True),
+        'debits': debits_by_category(period_rows),
+        'credits': credits_by_category(period_rows)
+    }
+    period_merchants = {
+        'expenses': top_merchants_from_rows(period_rows, use_my_share=True),
+        'debits': debits_by_merchant(period_rows),
+        'credits': credits_by_merchant(period_rows)
+    }
     message_html = f'<div class="notice">{esc(message)}</div>' if message else ""
     error_html = f'<div class="notice error">{esc(error)}</div>' if error else ""
     person_section = collapsible_section(
@@ -712,14 +841,30 @@ def page(
         """,
         f"{len(data['shared'])} shared",
     )
+    # Partner balances card
+    partner_html = ""
+    if partner_balances:
+        rows_html = "".join(
+            f'<tr><td><strong>{esc(b["username"].title())}</strong></td>'
+            f'<td class="amount {"credit" if b["net"] >= 0 else "debit"}">'
+            f'{"owes you" if b["net"] >= 0 else "you owe"} {money(abs(b["net"]))}</td></tr>'
+            for b in partner_balances
+        )
+        partner_html = f'<section style="margin-top:16px;"><h2>Partner balances</h2><table><tbody>{rows_html}</tbody></table></section>'
+
+    # User header badge
+    user_badge = ""
+    if current_user:
+        user_badge = f'<div class="user-badge"><span class="avatar">{esc(current_user[0].upper())}</span><span>{esc(current_user.title())}</span><form method="post" action="/logout" style="margin:0;"><button type="submit" class="logout-btn">Logout</button></form></div>'
+
     html_doc = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=3">
-  <script src="/chart.js?v=3"></script>
+  <link rel="stylesheet" href="/style.css?v=4">
+  <script src="/chart.js?v=4"></script>
 </head>
 <body>
   <header>
@@ -727,12 +872,13 @@ def page(
       <h1>Personal Expense Tracker</h1>
       <p>SBI statement imports, merchant learning, review queue, and shared expense tracking.</p>
     </div>
-    <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle theme">
-      <!-- Sun icon (for dark mode) -->
-      <svg class="sun-icon" viewBox="0 0 24 24" style="display:none;"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>
-      <!-- Moon icon (for light mode) -->
-      <svg class="moon-icon" viewBox="0 0 24 24" style="display:none;"><path d="M12.3 22h-.1c-5.5 0-10-4.5-10-10 0-4.8 3.5-9 8.3-9.8.6-.1 1.2.3 1.3.9.1.6-.2 1.2-.8 1.4-3.4 1-5.8 4.1-5.8 7.6 0 4.4 3.6 8 8 8 3.5 0 6.6-2.4 7.6-5.8.2-.6.8-.9 1.4-.8.6.1 1 .7.9 1.3-.8 4.8-5 8.2-9.9 8.2z"/></svg>
-    </button>
+    <div class="header-right">
+      {user_badge}
+      <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle theme">
+        <svg class="sun-icon" viewBox="0 0 24 24" style="display:none;"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>
+        <svg class="moon-icon" viewBox="0 0 24 24" style="display:none;"><path d="M12.3 22h-.1c-5.5 0-10-4.5-10-10 0-4.8 3.5-9 8.3-9.8.6-.1 1.2.3 1.3.9.1.6-.2 1.2-.8 1.4-3.4 1-5.8 4.1-5.8 7.6 0 4.4 3.6 8 8 8 3.5 0 6.6-2.4 7.6-5.8.2-.6.8-.9 1.4-.8.6.1 1 .7.9 1.3-.8 4.8-5 8.2-9.9 8.2z"/></svg>
+      </button>
+    </div>
   </header>
   
   <div class="app-container">
@@ -749,7 +895,7 @@ def page(
         <a href="#review" class="tab-link" data-tab="review">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
           <span>Review Queue</span>
-          <span class="tab-badge warn" id="review-count-badge">{len(data['pending'])}</span>
+          {f'<span class="tab-badge warn" id="review-count-badge">{pending_badge_count}</span>' if pending_badge_count > 0 else ''}
         </a>
         <a href="#transactions" class="tab-link" data-tab="transactions">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
@@ -761,12 +907,7 @@ def page(
         </a>
         <a href="#rules" class="tab-link" data-tab="rules">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-          <span>Knowledge & Shared</span>
-        </a>
-        <a href="#loops" class="tab-link" data-tab="loops">
-          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
-          <span>Loops</span>
-          {f'<span class="tab-badge ok" id="suggestions-badge">{len(data["suggestions"])}</span>' if len(data["suggestions"]) > 0 else ""}
+          <span>Knowledge &amp; Shared</span>
         </a>
       </nav>
     </aside>
@@ -778,11 +919,16 @@ def page(
       <div id="pane-dashboard" class="tab-pane active">
         {render_dashboard_filters(start_date, end_date, min_date, max_date, exclude_business, use_my_share)}
         
-        <div class="grid metrics">
-          <div class="metric"><span>Period credits</span><strong>{money(period_totals['credit'])}</strong></div>
-          <div class="metric"><span>Period debits</span><strong>{money(period_totals['debit'])}</strong></div>
-          <div class="metric"><span>Expense basis</span><strong>{money(period_totals['expense'])}</strong></div>
-          <div class="metric"><span>Awaiting review</span><strong>{len(data['pending'])}</strong></div>
+        <div class="grid metrics" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
+          <div id="card-credits" class="metric" onclick="switchDashboardTab('credits')" style="cursor:pointer;transition:transform 0.2s,box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.15)';" onmouseout="this.style.transform='none';this.style.boxShadow='none';">
+            <span>Period credits</span><strong style="color:var(--success);">{money(period_totals['credit'])}</strong>
+          </div>
+          <div id="card-debits" class="metric" onclick="switchDashboardTab('debits')" style="cursor:pointer;transition:transform 0.2s,box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.15)';" onmouseout="this.style.transform='none';this.style.boxShadow='none';">
+            <span>Period debits</span><strong style="color:var(--error);">{money(period_totals['debit'])}</strong>
+          </div>
+          <div id="card-expenses" class="metric active" onclick="switchDashboardTab('expenses')" style="cursor:pointer;transition:transform 0.2s,box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 12px rgba(0,0,0,0.15)';" onmouseout="this.style.transform='none';this.style.boxShadow='none';">
+            <span>My expenses</span><strong style="color:var(--error);">{money(period_totals['expense_share'])}</strong>
+          </div>
         </div>
 
         <div class="grid two" style="margin-top:24px;">
@@ -791,13 +937,13 @@ def page(
             {render_credit_debit_pie(period_totals)}
           </section>
           <section>
-            <h2>Expenses by category</h2>
+            <h2 id="chart-category-title">Expenses by category</h2>
             {render_categories_chart(period_categories)}
           </section>
         </div>
 
         <section style="margin-top:24px;">
-          <h2>Top merchants</h2>
+          <h2 id="chart-merchant-title">Top merchants</h2>
           {render_merchants_chart(period_merchants)}
         </section>
 
@@ -824,24 +970,10 @@ def page(
           </section>
           {render_manual_transaction_form()}
         </div>
-      </div>
-
-      <!-- Tab 3: Loops -->
-      <div id="pane-loops" class="tab-pane">
-        <section>
-          <h2>Suggested connections</h2>
-          <p class="section-desc">The matching engine finds credits that correspond to prior debits (e.g. repayments, reimbursements) based on name and amount correlations.</p>
-          {render_suggestions(data['suggestions'])}
-        </section>
-
-        <section style="margin-top: 24px;">
-          <h2>Link transactions manually</h2>
-          {render_manual_linker(data['linkable'])}
-        </section>
-
-        <section style="margin-top: 24px;">
-          <h2>Active connections</h2>
-          {render_active_connections(data['links'])}
+        
+        <section style="margin-top:24px;">
+          <h2>Money Flow</h2>
+          {render_money_flows_view(data['transactions'])}
         </section>
       </div>
 
@@ -851,15 +983,30 @@ def page(
           <h2>Transactions awaiting review</h2>
           {review_sort_controls(review_sort, review_search)}
           {review_search_controls(review_search, review_sort, len(data['pending']), len(filtered_review))}
-          <form method="post" action="/review" class="review-batch-form">
-            <div style="overflow-x: auto;">
-              <table>
-                <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Confirmation</th></tr></thead>
-                <tbody>{render_review_rows(pending_review)}</tbody>
-              </table>
-            </div>
-            {review_batch_actions(pending_review)}
-          </form>
+          <details open>
+            <summary><strong style="color:var(--debit-color,#e53e3e);">&#9654; Debits awaiting review</strong> <span class="tab-badge warn">{len(debit_review)}</span></summary>
+            <form method="post" action="/review" class="review-batch-form">
+              <div style="overflow-x: auto;">
+                <table>
+                  <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Confirmation</th></tr></thead>
+                  <tbody>{render_review_rows(debit_review) if debit_review else '<tr><td colspan="9" class="empty">No debits awaiting review in this period.</td></tr>'}</tbody>
+                </table>
+              </div>
+              {review_batch_actions(debit_review)}
+            </form>
+          </details>
+          <details style="margin-top:16px;">
+            <summary><strong style="color:var(--credit-color,#38a169);">&#9654; Credits awaiting review</strong> <span class="tab-badge ok">{len(credit_review)}</span></summary>
+            <form method="post" action="/review" class="review-batch-form">
+              <div style="overflow-x: auto;">
+                <table>
+                  <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Confirmation</th></tr></thead>
+                  <tbody>{render_review_rows(credit_review) if credit_review else '<tr><td colspan="9" class="empty">No credits awaiting review in this period.</td></tr>'}</tbody>
+                </table>
+              </div>
+              {review_batch_actions(credit_review)}
+            </form>
+          </details>
         </section>
       </div>
 
@@ -912,7 +1059,8 @@ def page(
           </section>
           <section>
             <h2>Shared expenses</h2>
-            <div style="overflow-x: auto;">
+            {partner_html}
+            <div style="overflow-x: auto; margin-top:12px;">
               <table>
                 <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th></tr></thead>
                 <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td></tr>" for r in data['shared']) or '<tr><td colspan="6" class="empty">No shared expenses yet.</td></tr>'}</tbody>
@@ -924,7 +1072,7 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=3"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>
 """

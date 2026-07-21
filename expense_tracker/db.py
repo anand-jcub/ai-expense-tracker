@@ -121,10 +121,25 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+    # Column migrations for multi-user support
+    _safe_add_column(conn, "transactions", "uploaded_by", "TEXT")
+    _safe_add_column(conn, "transactions", "source_txn_id", "INTEGER")
+    _safe_add_column(conn, "classifications", "shared_with", "TEXT")
+    conn.commit()
     swept = apply_learned_rules_to_pending(conn)
     if swept:
         conn.commit()
         logger.info("Applied learned rules to %d pending row(s) on startup.", swept)
+
+
+def _safe_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
+    """Add a column to a table if it doesn't already exist."""
+    try:
+        existing = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+    except Exception as exc:
+        logger.debug("Column migration skipped: %s", exc)
 
 
 def file_sha256(path: Path) -> str:
@@ -169,6 +184,7 @@ def import_transactions(
     sha256: str,
     rows: list[dict],
     password_used: bool,
+    uploaded_by: str | None = None,
 ) -> tuple[int, int, int]:
     existing = conn.execute("select id from imports where file_sha256 = ?", (sha256,)).fetchone()
     if existing:
@@ -197,9 +213,9 @@ def import_transactions(
                 insert into transactions (
                     import_id, source_hash, txn_date, value_date, description, reference,
                     debit, credit, amount_signed, balance, raw_text, merchant_key,
-                    merchant_display, created_at
+                    merchant_display, created_at, uploaded_by
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     import_id,
@@ -216,6 +232,7 @@ def import_transactions(
                     merchant_key,
                     merchant_display,
                     now,
+                    uploaded_by,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -273,6 +290,7 @@ def add_manual_transaction(
     split_ratio: Decimal = DEFAULT_SPLIT_RATIO,
     notes: str | None = None,
     learn: bool = False,
+    uploaded_by: str | None = None,
 ) -> int:
     if amount <= 0:
         raise ValueError("Amount must be greater than zero.")
@@ -300,9 +318,9 @@ def add_manual_transaction(
         insert into transactions (
             import_id, source_hash, txn_date, value_date, description, reference,
             debit, credit, amount_signed, balance, raw_text, merchant_key,
-            merchant_display, created_at
+            merchant_display, created_at, uploaded_by
         )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             import_id,
@@ -319,6 +337,7 @@ def add_manual_transaction(
             merchant_key,
             merchant_display,
             now,
+            uploaded_by,
         ),
     )
     transaction_id = int(txn_cur.lastrowid)
