@@ -899,7 +899,7 @@ def render_manual_linker(linkable: dict) -> str:
           </select>
         </label>
         <label>
-          <span>Link Amount (Rs)</span>
+          <span>Link Amount (₹)</span>
           <div class="input-with-button" style="display:flex; gap: 8px;">
             <input type="number" name="amount" step="0.01" min="0.01" placeholder="Enter amount" required id="manual-link-amount" style="flex:1;">
             <button type="submit" class="button">Link</button>
@@ -1473,7 +1473,7 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=9"></script>
+  <script src="/app.js?v=10"></script>
 </body>
 </html>
 """

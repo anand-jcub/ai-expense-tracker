@@ -925,9 +925,9 @@ def add_transaction_link(conn: sqlite3.Connection, debit_id: int, credit_id: int
     remaining_credit = Decimal(str(credit_row["credit"])) - linked_credit_val
     
     if amount > remaining_debit:
-        raise ValueError(f"Amount exceeds remaining debit balance of Rs {remaining_debit:.2f}")
+        raise ValueError(f"Amount exceeds remaining debit balance of ₹{remaining_debit:.2f}")
     if amount > remaining_credit:
-        raise ValueError(f"Amount exceeds remaining credit balance of Rs {remaining_credit:.2f}")
+        raise ValueError(f"Amount exceeds remaining credit balance of ₹{remaining_credit:.2f}")
     
     now = utc_now()
     cur = conn.execute(

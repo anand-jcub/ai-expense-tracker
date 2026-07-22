@@ -204,7 +204,7 @@
       card.innerHTML = 
         '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:6px; min-width:0; overflow:hidden;">' +
           '<strong class="text-truncate" style="font-size:12px; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(t.merchant_display) + '</strong>' +
-          '<span class="amount ' + amtClass + '" style="font-weight:700; font-size:12px; white-space:nowrap; flex-shrink:0;">' + directionSymbol + ' Rs ' + parseFloat(amount).toFixed(2) + '</span>' +
+          '<span class="amount ' + amtClass + '" style="font-weight:700; font-size:12px; white-space:nowrap; flex-shrink:0;">' + directionSymbol + ' ₹' + parseFloat(amount).toFixed(2) + '</span>' +
         '</div>' +
         '<div style="display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--muted); margin-top:2px;">' +
           '<span>' + t.txn_date + '</span>' +
@@ -397,8 +397,8 @@
     var modal = document.getElementById('builder-relationship-modal');
 
     if (textAEl && textBEl && modal) {
-      textAEl.textContent = txA.merchant_display + ' (' + (txA.debit > 0 ? 'Debit' : 'Credit') + ' Rs ' + parseFloat(txA.debit > 0 ? txA.debit : txA.credit).toFixed(2) + ')';
-      textBEl.textContent = txB.merchant_display + ' (' + (txB.debit > 0 ? 'Debit' : 'Credit') + ' Rs ' + parseFloat(txB.debit > 0 ? txB.debit : txB.credit).toFixed(2) + ')';
+      textAEl.textContent = txA.merchant_display + ' (' + (txA.debit > 0 ? 'Debit' : 'Credit') + ' ₹' + parseFloat(txA.debit > 0 ? txA.debit : txA.credit).toFixed(2) + ')';
+      textBEl.textContent = txB.merchant_display + ' (' + (txB.debit > 0 ? 'Debit' : 'Credit') + ' ₹' + parseFloat(txB.debit > 0 ? txB.debit : txB.credit).toFixed(2) + ')';
       
       // Auto-suggest type if we have suggestion logs
       var matchedType = "Custom";

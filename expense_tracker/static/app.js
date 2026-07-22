@@ -184,7 +184,7 @@
           meta.data.forEach(function (bar, index) {
             var value = dataset.data[index];
             if (value > 0) {
-              var formatted = 'Rs ' + value.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+              var formatted = '₹' + value.toLocaleString('en-IN', { minimumFractionDigits: 2 });
               ctx.fillText(formatted, bar.x + 8, bar.y);
             }
           });
@@ -222,7 +222,7 @@
               callbacks: {
                 label: function(context) {
                   var rawVal = context.raw || 0;
-                  return ' ' + context.label + ': Rs ' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                  return ' ' + context.label + ': ₹' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
                 }
               }
             }
@@ -283,7 +283,7 @@
               callbacks: {
                 label: function(context) {
                   var rawVal = context.raw || 0;
-                  return ' Rs ' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                  return ' ₹' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
                 }
               }
             }
@@ -347,7 +347,7 @@
               callbacks: {
                 label: function(context) {
                   var rawVal = context.raw || 0;
-                  return ' Rs ' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                  return ' ₹' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
                 }
               }
             }
