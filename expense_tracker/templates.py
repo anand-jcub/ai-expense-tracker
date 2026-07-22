@@ -726,6 +726,7 @@ def render_review_rows(rows) -> str:
                     {option_tags(EXPENSE_TYPES, row['expense_type'])}
                   </select></label>
                   <label class="review-field"><span>People</span><input name="split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
+                  <label class="review-field"><span>Shared with</span><input name="shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" title="Partner for shared expenses" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
                   <label class="review-field"><span>Notes</span><input name="notes_{row_id}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="learn_{row_id}"> Learn</label>
                 </div>
@@ -764,6 +765,7 @@ def render_edit_rows(rows) -> str:
                     {option_tags(EXPENSE_TYPES, row['expense_type'])}
                   </select></label>
                   <label class="review-field"><span>People</span><input name="edit_split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
+                  <label class="review-field"><span>Shared with</span><input name="edit_shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
                   <label class="review-field"><span>Notes</span><input name="edit_notes_{row_id}" value="{esc(row_get(row, 'notes', '') or '')}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="edit_learn_{row_id}"> Learn</label>
                 </div>
@@ -1106,16 +1108,30 @@ def page(
         """,
         f"{len(data['shared'])} shared",
     )
-    # Partner balances card
+    # Settlement / partner balances (USB when flag on)
     partner_html = ""
     if partner_balances:
         rows_html = "".join(
-            f'<tr><td><strong>{esc(b["username"].title())}</strong></td>'
-            f'<td class="amount {"credit" if b["net"] >= 0 else "debit"}">'
-            f'{"owes you" if b["net"] >= 0 else "you owe"} {money(abs(b["net"]))}</td></tr>'
+            f'<tr><td><strong>{esc(str(b.get("username", b.get("contact_name", "?"))).title())}</strong></td>'
+            f'<td class="amount {"credit" if float(b["net"]) >= 0 else "debit"}">'
+            f'{"owes you" if float(b["net"]) >= 0 else "you owe"} {money(abs(float(b["net"])))}</td></tr>'
             for b in partner_balances
         )
-        partner_html = f'<section style="margin-top:16px;"><h2>Partner balances</h2><table><tbody>{rows_html}</tbody></table></section>'
+        partner_html = (
+            f'<section style="margin-top:16px;"><h2>Who owes whom (settlement)</h2>'
+            f'<table><tbody>{rows_html}</tbody></table></section>'
+        )
+
+    # Contact datalist for shared-with picker
+    contact_options = ""
+    for item in data.get("contacts") or []:
+        c = item.get("contact") if isinstance(item, dict) and "contact" in item else item
+        if not c:
+            continue
+        if c.get("merged_into_id"):
+            continue
+        contact_options += f'<option value="{esc(c.get("name", ""))}">'
+    partner_datalist = f'<datalist id="contact-partner-list">{contact_options}</datalist>'
 
     # User header badge
     user_badge = ""
@@ -1253,6 +1269,7 @@ def page(
 
       <!-- Tab 4: Review Queue -->
       <div id="pane-review" class="tab-pane">
+        {partner_datalist}
         <section>
           <h2>Transactions awaiting review</h2>
           {review_sort_controls(review_sort, review_search)}

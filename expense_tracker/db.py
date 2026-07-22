@@ -32,11 +32,117 @@ def utc_now() -> str:
 
 
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
+    """Open a DB connection and ensure schema/migrations are applied."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("pragma foreign_keys = on")
+    init_db(conn)
     return conn
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    except Exception:
+        return set()
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def migrate_ledger_schema(conn: sqlite3.Connection) -> None:
+    """Bring contacts/ledger tables up to the current dual-column schema.
+
+    Legacy DBs used ``entry_type`` (and sometimes ``passthrough_contact_id``)
+    without ``direction`` / ``passthrough_pair_id``. Newer code dual-writes
+    both direction and entry_type.
+    """
+    if not _table_exists(conn, "ledger_entries"):
+        return
+
+    _safe_add_column(conn, "ledger_entries", "direction", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "entry_type", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "purpose", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "is_passthrough", "INTEGER DEFAULT 0")
+    _safe_add_column(conn, "ledger_entries", "passthrough_pair_id", "INTEGER")
+    _safe_add_column(conn, "ledger_entries", "is_opening_balance", "INTEGER DEFAULT 0")
+    _safe_add_column(conn, "ledger_entries", "entry_date", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "created_by", "TEXT DEFAULT 'user'")
+    _safe_add_column(conn, "ledger_entries", "notes", "TEXT")
+
+    cols = _table_columns(conn, "ledger_entries")
+
+    # Backfill direction <-> entry_type so readers can use either column.
+    try:
+        if "direction" in cols and "entry_type" in cols:
+            conn.execute(
+                """
+                UPDATE ledger_entries
+                SET entry_type = direction
+                WHERE (entry_type IS NULL OR entry_type = '')
+                  AND direction IS NOT NULL AND direction != ''
+                """
+            )
+            conn.execute(
+                """
+                UPDATE ledger_entries
+                SET direction = entry_type
+                WHERE (direction IS NULL OR direction = '')
+                  AND entry_type IS NOT NULL AND entry_type != ''
+                """
+            )
+        elif "direction" in cols and "entry_type" not in cols:
+            pass  # only direction present
+        elif "entry_type" in cols and "direction" not in cols:
+            # direction column should already have been added above
+            conn.execute(
+                """
+                UPDATE ledger_entries
+                SET direction = entry_type
+                WHERE (direction IS NULL OR direction = '')
+                  AND entry_type IS NOT NULL AND entry_type != ''
+                """
+            )
+    except Exception as exc:
+        logger.warning("Ledger direction/entry_type backfill skipped: %s", exc)
+
+    # Normalize purpose defaults
+    try:
+        conn.execute(
+            """
+            UPDATE ledger_entries
+            SET purpose = 'other'
+            WHERE purpose IS NULL OR purpose = ''
+            """
+        )
+    except Exception as exc:
+        logger.debug("Ledger purpose backfill skipped: %s", exc)
+
+    # Ensure entry_date is populated for older rows
+    try:
+        conn.execute(
+            """
+            UPDATE ledger_entries
+            SET entry_date = substr(created_at, 1, 10)
+            WHERE (entry_date IS NULL OR entry_date = '')
+              AND created_at IS NOT NULL
+            """
+        )
+    except Exception as exc:
+        logger.debug("Ledger entry_date backfill skipped: %s", exc)
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ledger_contact ON ledger_entries(contact_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ledger_transaction ON ledger_entries(transaction_id)"
+    )
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -131,9 +237,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             id integer primary key autoincrement,
             contact_id integer not null references contacts(id) on delete cascade,
             transaction_id integer references transactions(id) on delete set null,
-            direction text not null,
+            direction text,
+            entry_type text,
             amount numeric not null,
-            purpose text not null,
+            purpose text not null default 'other',
             is_passthrough integer default 0,
             passthrough_pair_id integer references ledger_entries(id),
             is_opening_balance integer default 0,
@@ -148,41 +255,112 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
-    seed_default_contacts(conn)
+
     # Column migrations for multi-user & ledger support
     _safe_add_column(conn, "transactions", "uploaded_by", "TEXT")
     _safe_add_column(conn, "transactions", "source_txn_id", "INTEGER")
     _safe_add_column(conn, "classifications", "shared_with", "TEXT")
     _safe_add_column(conn, "contacts", "aliases_json", "TEXT DEFAULT '[]'")
     _safe_add_column(conn, "contacts", "notes", "TEXT")
-    _safe_add_column(conn, "ledger_entries", "direction", "TEXT")
-    _safe_add_column(conn, "ledger_entries", "entry_type", "TEXT")
-    _safe_add_column(conn, "ledger_entries", "purpose", "TEXT")
-    _safe_add_column(conn, "ledger_entries", "is_passthrough", "INTEGER DEFAULT 0")
-    _safe_add_column(conn, "ledger_entries", "passthrough_pair_id", "INTEGER")
-    _safe_add_column(conn, "ledger_entries", "is_opening_balance", "INTEGER DEFAULT 0")
-    _safe_add_column(conn, "ledger_entries", "entry_date", "TEXT")
-    _safe_add_column(conn, "ledger_entries", "created_by", "TEXT DEFAULT 'user'")
-    try:
-        conn.execute("UPDATE ledger_entries SET entry_type = direction WHERE (entry_type IS NULL OR entry_type = '') AND direction IS NOT NULL")
-        conn.execute("UPDATE ledger_entries SET direction = entry_type WHERE (direction IS NULL OR direction = '') AND entry_type IS NOT NULL")
-    except Exception:
-        pass
+
+    migrate_ledger_schema(conn)
+    migrate_settlement_schema(conn)
     conn.commit()
+
+    seed_default_contacts(conn)
+
     swept = apply_learned_rules_to_pending(conn)
     if swept:
         conn.commit()
         logger.info("Applied learned rules to %d pending row(s) on startup.", swept)
 
 
+def migrate_settlement_schema(conn: sqlite3.Connection) -> None:
+    """Additive columns for unified settlement (USB) model."""
+    if not _table_exists(conn, "contacts"):
+        return
+
+    _safe_add_column(conn, "contacts", "merged_into_id", "INTEGER")
+    _safe_add_column(conn, "contacts", "merge_batch_id", "TEXT")
+    _safe_add_column(conn, "contacts", "linked_username", "TEXT")
+
+    if _table_exists(conn, "ledger_entries"):
+        _safe_add_column(conn, "ledger_entries", "source", "TEXT")
+        _safe_add_column(conn, "ledger_entries", "voided_at", "TEXT")
+        _safe_add_column(conn, "ledger_entries", "void_reason", "TEXT")
+        # Backfill source from created_by
+        try:
+            conn.execute(
+                """
+                UPDATE ledger_entries
+                SET source = CASE
+                    WHEN created_by = 'auto' THEN 'auto_migrate'
+                    WHEN purpose = 'settlement' THEN 'settlement'
+                    WHEN coalesce(is_passthrough, 0) = 1 THEN 'auto_passthrough'
+                    ELSE 'user'
+                END
+                WHERE source IS NULL OR source = ''
+                """
+            )
+        except Exception as exc:
+            logger.debug("source backfill skipped: %s", exc)
+
+    if _table_exists(conn, "classifications"):
+        _safe_add_column(conn, "classifications", "shared_with", "TEXT")
+        _safe_add_column(conn, "classifications", "shared_with_contact_id", "INTEGER")
+        # Backfill shared_with_contact_id where text resolvable
+        try:
+            from .settlement import resolve_contact
+
+            rows = conn.execute(
+                """
+                SELECT transaction_id, shared_with FROM classifications
+                WHERE shared_with IS NOT NULL AND shared_with != ''
+                  AND (shared_with_contact_id IS NULL)
+                """
+            ).fetchall()
+            for r in rows:
+                match = resolve_contact(conn, r["shared_with"])
+                if match:
+                    conn.execute(
+                        "UPDATE classifications SET shared_with_contact_id = ? WHERE transaction_id = ?",
+                        (match["canonical_id"], r["transaction_id"]),
+                    )
+        except Exception as exc:
+            logger.debug("shared_with_contact_id backfill skipped: %s", exc)
+
+    # Indexes (non-unique lookup + partial unique for auto_shared when possible)
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ledger_contact_txn "
+            "ON ledger_entries(contact_id, transaction_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contacts_merged "
+            "ON contacts(merged_into_id)"
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_auto_shared
+            ON ledger_entries(contact_id, transaction_id)
+            WHERE source = 'auto_shared' AND (voided_at IS NULL OR voided_at = '')
+            """
+        )
+    except Exception as exc:
+        logger.debug("Settlement index creation skipped: %s", exc)
+
+
 def _safe_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
     """Add a column to a table if it doesn't already exist."""
+    if not _table_exists(conn, table):
+        return
     try:
-        existing = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        existing = _table_columns(conn, table)
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            logger.info("Added column %s.%s", table, column)
     except Exception as exc:
-        logger.debug("Column migration skipped: %s", exc)
+        logger.warning("Column migration skipped for %s.%s: %s", table, column, exc)
 
 
 def seed_default_contacts(conn: sqlite3.Connection) -> None:
@@ -485,6 +663,8 @@ def review_transaction(
     split_ratio: Decimal = DEFAULT_SPLIT_RATIO,
     notes: str | None = None,
     learn: bool = False,
+    shared_with: str | None = None,
+    shared_with_contact_id: int | None = None,
 ) -> None:
     tx = conn.execute(
         "select merchant_key, merchant_display, amount_signed from transactions where id = ?",
@@ -501,26 +681,55 @@ def review_transaction(
             category, expense_type, split_ratio, now,
         )
 
+    # Resolve partner contact when text provided
+    sw_text = (shared_with or "").strip() or None
+    sw_cid = shared_with_contact_id
+    if sw_text and sw_cid is None:
+        try:
+            from .settlement import resolve_contact
+
+            match = resolve_contact(conn, sw_text)
+            if match:
+                sw_cid = int(match["canonical_id"])
+        except Exception:
+            pass
+    if sw_text or sw_cid:
+        expense_type = "Shared"
+
     amount = Decimal(str(tx["amount_signed"]))
     my_share = effective_share(amount, expense_type, split_ratio)
+
+    cols = _table_columns(conn, "classifications")
+    set_parts = [
+        "category = ?",
+        "expense_type = ?",
+        "split_ratio = ?",
+        "my_share = ?",
+        "status = 'reviewed'",
+        "confidence = 1.0",
+        "rule_id = ?",
+        "notes = ?",
+        "updated_at = ?",
+    ]
+    values: list = [
+        category,
+        expense_type,
+        str(split_ratio),
+        str(my_share),
+        rule_id,
+        notes,
+        now,
+    ]
+    if "shared_with" in cols:
+        set_parts.append("shared_with = ?")
+        values.append(sw_text)
+    if "shared_with_contact_id" in cols:
+        set_parts.append("shared_with_contact_id = ?")
+        values.append(sw_cid)
+    values.append(transaction_id)
     conn.execute(
-        """
-        update classifications
-        set category = ?, expense_type = ?, split_ratio = ?, my_share = ?,
-            status = 'reviewed', confidence = 1.0, rule_id = ?,
-            notes = ?, updated_at = ?
-        where transaction_id = ?
-        """,
-        (
-            category,
-            expense_type,
-            str(split_ratio),
-            str(my_share),
-            rule_id,
-            notes,
-            now,
-            transaction_id,
-        ),
+        f"UPDATE classifications SET {', '.join(set_parts)} WHERE transaction_id = ?",
+        tuple(values),
     )
     conn.execute(
         """
@@ -632,6 +841,8 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     contacts = get_all_contacts(conn)
     contacts_with_balances = []
     for c in contacts:
+        if c.get("merged_into_id"):
+            continue
         bal = calculate_contact_balance(conn, c["id"])
         contacts_with_balances.append({
             "contact": c,

@@ -602,23 +602,39 @@
           return;
         }
 
-        var bal = data.balance || {};
-        var net = bal.net_balance || 0;
+        // Support both flat API shape and accidental nested payload.
+        var bal = data.balance || (data.entries && data.entries.balance) || {};
+        var entries = Array.isArray(data.entries)
+          ? data.entries
+          : (data.entries && Array.isArray(data.entries.entries) ? data.entries.entries : []);
+        var virtualLines = Array.isArray(data.virtual_shared_lines) ? data.virtual_shared_lines : [];
+        var net = (bal.net_balance != null ? bal.net_balance : bal.net) || 0;
         var statusColor = net > 0 ? 'var(--success)' : net < 0 ? 'var(--error)' : 'var(--muted)';
         var statusText = net > 0 ? ('Owes you ₹' + net.toLocaleString('en-IN')) :
           net < 0 ? ('You owe ₹' + Math.abs(net).toLocaleString('en-IN')) : 'Settled (₹0)';
+        var ledgerNet = bal.ledger_net != null ? bal.ledger_net : null;
+        var virtualNet = bal.virtual_shared_net != null ? bal.virtual_shared_net : 0;
+        var ptExcl = bal.passthrough_excluded_net != null ? bal.passthrough_excluded_net : null;
+
+        var extra = '';
+        if (ledgerNet != null || virtualNet || ptExcl) {
+          extra = '<div style="margin-top:10px; font-size:11px; color:var(--muted); display:flex; flex-wrap:wrap; gap:10px;">' +
+            (ledgerNet != null ? '<span>Ledger: ₹' + Number(ledgerNet).toLocaleString('en-IN') + '</span>' : '') +
+            '<span>Open shared: ₹' + Number(virtualNet).toLocaleString('en-IN') + '</span>' +
+            (ptExcl != null ? '<span>Rolling excl.: ₹' + Number(ptExcl).toLocaleString('en-IN') + '</span>' : '') +
+            '</div>';
+        }
 
         summaryEl.innerHTML =
           '<div style="display:flex; justify-content:space-between; align-items:center;">' +
-          '<div><span style="font-size:12px; color:var(--muted); text-transform:uppercase; font-weight:600;">Net Balance Position</span>' +
+          '<div><span style="font-size:12px; color:var(--muted); text-transform:uppercase; font-weight:600;">Net Balance Position (USB)</span>' +
           '<strong style="display:block; font-size:18px; color:' + statusColor + ';">' + statusText + '</strong></div>' +
           '<div style="text-align:right; font-size:12px; color:var(--muted);">' +
           '<div>Given: <strong style="color:var(--text-color);">₹' + (bal.total_you_sent || 0).toLocaleString('en-IN') + '</strong></div>' +
           '<div>Received: <strong style="color:var(--text-color);">₹' + (bal.total_they_sent || 0).toLocaleString('en-IN') + '</strong></div>' +
-          '</div></div>';
+          '</div></div>' + extra;
 
-        var entries = data.entries || [];
-        if (!entries.length) {
+        if (!entries.length && !virtualLines.length) {
           listEl.innerHTML = '<p class="empty">No entries logged yet.</p>';
           return;
         }
@@ -630,9 +646,9 @@
           var icon = isYou ? '↗' : '↘';
           var prefix = isYou ? '+ ' : '- ';
           var passthroughBadge = e.is_passthrough ? '<span class="badge subtle" style="font-size:10px; margin-left:6px;">⚡ Pass-Through</span>' : '';
-          var openingBadge = e.is_opening_balance ? '<span class="badge warn" style="font-size:10px; margin-left:6px;">Pre-July Opening</span>' : '';
+          var openingBadge = e.is_opening_balance ? '<span class="badge warn" style="font-size:10px; margin-left:6px;">Opening</span>' : '';
           var noteText = e.notes ? ('<div style="font-size:12px; color:var(--muted); margin-top:4px;">' + e.notes + '</div>') : '';
-          var purposeText = e.purpose ? ('<span class="badge subtle" style="font-size:10px; text-transform:capitalize;">' + e.purpose.replace('_', ' ') + '</span>') : '';
+          var purposeText = e.purpose ? ('<span class="badge subtle" style="font-size:10px; text-transform:capitalize;">' + String(e.purpose).replace('_', ' ') + '</span>') : '';
 
           html += '<div class="ledger-row" data-direction="' + (isYou ? 'you_sent' : 'they_sent') + '" style="background:var(--background-color); border:1px solid var(--border-color); border-radius:10px; padding:12px;">' +
             '<div style="display:flex; justify-content:space-between; align-items:center;">' +
@@ -646,6 +662,17 @@
             noteText +
             '</div>';
         });
+        if (virtualLines.length) {
+          html += '<div style="margin-top:8px; padding-top:12px; border-top:1px dashed var(--border-color);">' +
+            '<div style="font-size:12px; font-weight:600; color:var(--muted); margin-bottom:8px;">Open shared (not yet posted)</div>';
+          virtualLines.forEach(function (e) {
+            html += '<div class="ledger-row" style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.25); border-radius:10px; padding:12px; margin-bottom:8px;">' +
+              '<div style="display:flex; justify-content:space-between;"><span>' + (e.date || '') + '</span>' +
+              '<strong style="color:var(--accent);">+ ₹' + (e.amount || 0).toLocaleString('en-IN') + '</strong></div>' +
+              '<div style="font-size:12px; color:var(--muted); margin-top:4px;">' + (e.notes || 'Shared expense') + '</div></div>';
+          });
+          html += '</div>';
+        }
         html += '</div>';
         listEl.innerHTML = html;
       })

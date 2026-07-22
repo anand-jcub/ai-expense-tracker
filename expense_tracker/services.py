@@ -270,54 +270,49 @@ def active_period_label(start_date: str, end_date: str) -> str:
 
 
 def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> list[dict]:
-    """Compute how much each partner owes the current user (or vice versa).
+    """Legacy multi-user partner balances. Prefer settlement.summary_all_contacts when USB is on.
 
-    Returns a list of dicts: {username, they_owe_you, you_owe_them, net}.
-    Positive net = they owe you. Negative net = you owe them.
+    Uses net_debit residual (debit − offset − my) on a single base — not stored my_share alone.
     """
+    from .settlement import partner_share_for_row
+
     results = []
     for partner in all_users:
         if partner.lower() == current_user.lower():
             continue
         try:
-            # Transactions the current user shared with this partner (user paid, partner owes share)
             rows = conn.execute(
                 """
-                SELECT c.my_share, c.expense_type, c.split_ratio
+                SELECT t.debit, c.my_share, c.expense_type, c.split_ratio,
+                       coalesce((select sum(amount) from transaction_links where debit_id = t.id), 0) as debit_offset
                 FROM transactions t
                 JOIN classifications c ON c.transaction_id = t.id
                 WHERE t.debit > 0
                   AND c.expense_type = 'Shared'
-                  AND c.shared_with = ?
+                  AND lower(c.shared_with) = ?
                   AND (t.uploaded_by = ? OR t.uploaded_by IS NULL)
                 """,
                 (partner.lower(), current_user.lower()),
             ).fetchall()
+            they_owe_me = sum(partner_share_for_row(r) for r in rows)
 
-            # Amount current user paid that partner should contribute
-            they_owe_me = sum(
-                max(Decimal("0"), Decimal(str(r["debit"] if "debit" in r.keys() else 0)))
-                for r in rows
-            )
-            # Simpler: use my_share complement
-            they_owe_me = sum(
-                Decimal(str(r["my_share"] or 0))
-                for r in rows
-            )
-
-            # Transactions partner shared with current user (partner paid, user owes share)
             partner_rows = conn.execute(
                 """
-                SELECT c.my_share
+                SELECT t.debit, c.my_share, c.expense_type, c.split_ratio,
+                       coalesce((select sum(amount) from transaction_links where debit_id = t.id), 0) as debit_offset
                 FROM transactions t
                 JOIN classifications c ON c.transaction_id = t.id
                 WHERE t.uploaded_by = ?
                   AND c.expense_type = 'Shared'
-                  AND c.shared_with = ?
+                  AND lower(c.shared_with) = ?
                 """,
                 (partner.lower(), current_user.lower()),
             ).fetchall()
-            i_owe_them = sum(Decimal(str(r["my_share"] or 0)) for r in partner_rows)
+            # When partner paid, my_share on their DB is what I owe them
+            i_owe_them = sum(
+                (Decimal(str(r["my_share"] or 0)) for r in partner_rows),
+                Decimal("0"),
+            )
 
             net = they_owe_me - i_owe_them
             if they_owe_me > 0 or i_owe_them > 0:
@@ -328,13 +323,30 @@ def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> l
                     "net": net,
                 })
         except Exception:
-            pass
+            logger = __import__("logging").getLogger(__name__)
+            logger.exception("compute_partner_balances failed for %s", partner)
     return results
 
 
 def get_household_balances(conn, current_user: str) -> list[dict]:
-    """Return shared expense summaries grouped by partner."""
-    return compute_partner_balances(conn, current_user, [])
+    """Return USB contact nets when available; else empty (legacy always needed all_users)."""
+    try:
+        from .settlement import settlement_usb_enabled, summary_all_contacts
+
+        if settlement_usb_enabled():
+            return [
+                {
+                    "username": b.contact_name,
+                    "they_owe_you": b.they_owe_you,
+                    "you_owe_them": b.you_owe_them,
+                    "net": b.net,
+                }
+                for b in summary_all_contacts(conn)
+                if b.net != 0
+            ]
+    except Exception:
+        pass
+    return []
 
 
 def credits_by_category(rows) -> list[tuple[str, Decimal]]:

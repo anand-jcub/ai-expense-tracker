@@ -1,7 +1,7 @@
 import pytest
 import sqlite3
 from decimal import Decimal
-from expense_tracker.db import init_db
+from expense_tracker.db import init_db, migrate_ledger_schema, _table_columns
 from expense_tracker.contacts import (
     create_contact,
     get_all_contacts,
@@ -80,3 +80,101 @@ def test_opening_balance(conn):
     
     bal = calculate_contact_balance(conn, cid)
     assert bal["net_balance"] == -1500.0  # You owe Charlie 1500
+
+
+def test_get_contact_ledger_api_shape(conn):
+    """Drawer API expects entries as a list plus a flat balance object."""
+    cid = create_contact(conn, "Dana")
+    add_ledger_entry(
+        conn,
+        contact_id=cid,
+        direction="you_sent",
+        amount=Decimal("100"),
+        purpose="loan",
+        entry_date="2026-07-01",
+    )
+    payload = get_contact_ledger(conn, cid)
+    assert isinstance(payload["entries"], list)
+    assert len(payload["entries"]) == 1
+    assert "net_balance" in payload["balance"]
+    assert payload["entries"][0]["direction"] in ("you_sent", "they_sent")
+    assert "running_balance" in payload["entries"][0]
+
+    # Simulate what the fixed web handler returns
+    api = {
+        "contact": payload.get("contact"),
+        "balance": payload.get("balance"),
+        "entries": payload.get("entries") or [],
+    }
+    assert isinstance(api["entries"], list)
+    assert api["entries"][0]["amount"] == 100.0
+
+
+def test_legacy_schema_migration_backfills_direction():
+    """Old DBs only had entry_type; migrate must add/fill direction."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE contacts (
+            id integer primary key autoincrement,
+            name text not null unique,
+            aliases_json text not null default '[]',
+            notes text,
+            created_at text not null
+        );
+        CREATE TABLE ledger_entries (
+            id integer primary key autoincrement,
+            contact_id integer not null references contacts(id),
+            transaction_id integer,
+            entry_type text not null,
+            amount numeric not null,
+            purpose text,
+            notes text,
+            entry_date text,
+            is_opening_balance integer default 0,
+            is_passthrough integer default 0,
+            passthrough_contact_id integer,
+            created_at text not null,
+            created_by text default 'user'
+        );
+        INSERT INTO contacts (name, aliases_json, created_at)
+        VALUES ('Legacy Person', '[]', '2026-07-01T00:00:00+00:00');
+        INSERT INTO ledger_entries (
+            contact_id, entry_type, amount, purpose, entry_date, created_at, created_by
+        ) VALUES (1, 'you_sent', 2500, 'loan', '2026-07-01', '2026-07-01T00:00:00+00:00', 'auto');
+        """
+    )
+    connection.commit()
+
+    # Partial migrate path used by init_db
+    migrate_ledger_schema(connection)
+    connection.commit()
+
+    cols = _table_columns(connection, "ledger_entries")
+    assert "direction" in cols
+    assert "passthrough_pair_id" in cols
+
+    row = connection.execute(
+        "SELECT direction, entry_type, amount FROM ledger_entries WHERE id = 1"
+    ).fetchone()
+    assert row["direction"] == "you_sent"
+    assert row["entry_type"] == "you_sent"
+
+    bal = calculate_contact_balance(connection, 1)
+    assert bal["net_balance"] == 2500.0
+    assert bal["total_you_sent"] == 2500.0
+
+    # New writes should succeed after migration
+    eid = add_ledger_entry(
+        connection,
+        contact_id=1,
+        direction="they_sent",
+        amount=Decimal("500"),
+        purpose="rolling",
+        entry_date="2026-07-02",
+    )
+    assert eid > 0
+    bal2 = calculate_contact_balance(connection, 1)
+    assert bal2["net_balance"] == 2000.0
+    connection.close()

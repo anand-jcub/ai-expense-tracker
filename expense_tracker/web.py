@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
 import urllib.parse
@@ -11,6 +12,7 @@ from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 from pypdf.errors import PdfReadError
 
@@ -107,7 +109,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def respond_json(self, payload: Any, status: int = 200) -> None:
-        body = json.dumps(payload, default=str).encode("utf-8")
+        import json as json_mod
+        body = json_mod.dumps(payload, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -173,13 +176,38 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/contacts/ledger":
                 self.handle_api_contact_ledger(username, params)
                 return
+            if parsed.path == "/api/settlement":
+                self.handle_api_settlement(username, params)
+                return
+            if parsed.path == "/api/settlement/by-name":
+                self.handle_api_settlement_by_name(username, params)
+                return
+            if parsed.path == "/api/settlement/summary":
+                self.handle_api_settlement_summary(username)
+                return
 
             if parsed.path == "/":
                 db_path = self._db_path_for(username)
                 all_users = get_all_usernames()
                 with connect(db_path) as conn:
                     data = dashboard_data(conn)
-                    partner_balances = compute_partner_balances(conn, username, all_users)
+                    from .settlement import settlement_usb_enabled, summary_all_contacts, settlement_to_json
+
+                    if settlement_usb_enabled():
+                        usb_list = summary_all_contacts(conn)
+                        partner_balances = [
+                            {
+                                "username": b.contact_name,
+                                "contact_id": b.contact_id,
+                                "they_owe_you": b.they_owe_you,
+                                "you_owe_them": b.you_owe_them,
+                                "net": b.net,
+                            }
+                            for b in usb_list
+                            if b.net != 0
+                        ]
+                    else:
+                        partner_balances = compute_partner_balances(conn, username, all_users)
                 self.respond_html(
                     page(
                         data,
@@ -252,6 +280,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 self.handle_passthrough_confirm(username)
             elif self.path == "/ledger/settle":
                 self.handle_ledger_settle(username)
+            elif self.path == "/ledger/materialize-shared":
+                self.handle_materialize_shared(username)
+            elif self.path == "/contacts/merge":
+                self.handle_contacts_merge(username)
             else:
                 self.send_error(404)
         except Exception:
@@ -267,10 +299,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         password = params.get("password", [""])[0]
         session_id = authenticate_user(username, password)
         if session_id:
-            # Ensure the user's DB exists and is migrated
+            # Ensure the user's DB exists and is migrated (connect() runs init_db)
             db_path = self._db_path_for(username)
             with connect(db_path) as conn:
-                pass  # connect() already calls init_db
+                pass
             self.send_response(303)
             self.send_header("Location", "/")
             self.send_header(
@@ -420,8 +452,11 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 raise ValueError("Choose a category and expense type.")
             db_path = self._db_path_for(username)
             with connect(db_path) as conn:
-                review_transaction(conn, transaction_id, category, expense_type, split_ratio, notes, learn)
-                if shared_with:
+                review_transaction(
+                    conn, transaction_id, category, expense_type, split_ratio, notes, learn,
+                    shared_with=shared_with,
+                )
+                if shared_with and self._is_registered_username(shared_with):
                     self.sync_shared_transaction(conn, transaction_id, username, shared_with)
             self.redirect(message="Transaction confirmed and merchant knowledge base updated.")
         except ValueError as exc:
@@ -429,6 +464,12 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Unexpected error during review.")
             self.redirect(error=str(exc))
+
+    def _is_registered_username(self, name: str) -> bool:
+        try:
+            return name.strip().lower() in {u.lower() for u in get_all_usernames()}
+        except Exception:
+            return False
 
     def handle_review_batch(self, params: dict[str, list[str]], username: str) -> None:
         confirmed = 0
@@ -452,8 +493,11 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 )
                 notes = params.get(f"notes_{transaction_id}", [""])[0].strip() or None
                 learn = f"learn_{transaction_id}" in params
-                review_transaction(conn, transaction_id, category, expense_type, split_ratio, notes, learn)
-                if shared_with:
+                review_transaction(
+                    conn, transaction_id, category, expense_type, split_ratio, notes, learn,
+                    shared_with=shared_with,
+                )
+                if shared_with and self._is_registered_username(shared_with):
                     self.sync_shared_transaction(conn, transaction_id, username, shared_with)
                 confirmed += 1
 
@@ -489,8 +533,11 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     )
                     notes = params.get(f"edit_notes_{transaction_id}", [""])[0].strip() or None
                     learn = f"edit_learn_{transaction_id}" in params
-                    review_transaction(conn, transaction_id, category, expense_type, split_ratio, notes, learn)
-                    if shared_with:
+                    review_transaction(
+                        conn, transaction_id, category, expense_type, split_ratio, notes, learn,
+                        shared_with=shared_with,
+                    )
+                    if shared_with and self._is_registered_username(shared_with):
                         self.sync_shared_transaction(conn, transaction_id, username, shared_with)
                     updated += 1
 
@@ -630,11 +677,104 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             return
         contact_id = int(contact_id_str)
         db_path = self._db_path_for(username)
-        with connect(db_path) as conn:
-            from .contacts import get_contact_ledger, calculate_contact_balance
-            entries = get_contact_ledger(conn, contact_id)
-            balance = calculate_contact_balance(conn, contact_id)
-        self.respond_json({"entries": entries, "balance": balance})
+        try:
+            with connect(db_path) as conn:
+                from .contacts import get_contact_ledger
+                from .settlement import (
+                    compute_unified_settlement,
+                    settlement_to_json,
+                    settlement_usb_enabled,
+                )
+
+                payload = get_contact_ledger(conn, contact_id)
+                balance = payload.get("balance")
+                virtual_lines = []
+                if settlement_usb_enabled():
+                    usb = compute_unified_settlement(conn, contact_id)
+                    balance = settlement_to_json(usb)
+                    virtual_lines = [
+                        {
+                            k: (float(v) if hasattr(v, "as_tuple") else v)
+                            for k, v in line.__dict__.items()
+                        }
+                        for line in usb.lines
+                        if line.kind == "virtual_shared"
+                    ]
+            self.respond_json(
+                {
+                    "contact": payload.get("contact"),
+                    "balance": balance,
+                    "entries": payload.get("entries") or [],
+                    "virtual_shared_lines": virtual_lines,
+                }
+            )
+        except ValueError as exc:
+            self.respond_json({"error": str(exc)}, status=404)
+        except Exception:
+            logger.exception("Failed to load contact ledger for id=%s", contact_id)
+            self.respond_json({"error": "Failed to load ledger"}, status=500)
+
+    def handle_api_settlement(self, username: str, params: dict) -> None:
+        contact_id_str = params.get("contact_id", [""])[0]
+        if not contact_id_str.isdigit():
+            self.respond_json({"error": "Invalid contact_id"}, status=400)
+            return
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                from .settlement import compute_unified_settlement, settlement_to_json
+
+                bal = compute_unified_settlement(conn, int(contact_id_str))
+            self.respond_json(settlement_to_json(bal))
+        except ValueError as exc:
+            self.respond_json({"error": str(exc)}, status=404)
+        except Exception:
+            logger.exception("settlement API failed")
+            self.respond_json({"error": "Failed to compute settlement"}, status=500)
+
+    def handle_api_settlement_by_name(self, username: str, params: dict) -> None:
+        q = params.get("q", [""])[0].strip()
+        if not q:
+            self.respond_json({"error": "Missing q"}, status=400)
+            return
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                from .settlement import (
+                    compute_unified_settlement,
+                    format_settlement_answer,
+                    resolve_contact,
+                    settlement_to_json,
+                )
+
+                match = resolve_contact(conn, q)
+                if not match:
+                    self.respond_json({"error": f"No contact matching '{q}'"}, status=404)
+                    return
+                bal = compute_unified_settlement(conn, int(match["canonical_id"]))
+                payload = settlement_to_json(bal)
+                payload["answer"] = format_settlement_answer(bal)
+                payload["match_score"] = match.get("score")
+            self.respond_json(payload)
+        except Exception:
+            logger.exception("settlement by-name failed")
+            self.respond_json({"error": "Failed to resolve settlement"}, status=500)
+
+    def handle_api_settlement_summary(self, username: str) -> None:
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                from .settlement import settlement_to_json, summary_all_contacts
+
+                items = [
+                    settlement_to_json(b)
+                    for b in summary_all_contacts(conn)
+                    if b.net != 0
+                ]
+            self.respond_json({"contacts": items})
+        except Exception:
+            logger.exception("settlement summary failed")
+            self.respond_json({"error": "Failed to load summary"}, status=500)
 
     def handle_contact_create(self, username: str) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -690,41 +830,69 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         action = params.get("action", ["confirm"])[0]
         credit_id = int(params.get("credit_id", [0])[0])
         debit_id = int(params.get("debit_id", [0])[0])
-        from_contact_id = int(params.get("from_contact_id", [0])[0])
-        to_contact_id = int(params.get("to_contact_id", [0])[0])
+        from_raw = params.get("from_contact_id", ["0"])[0]
+        to_raw = params.get("to_contact_id", ["0"])[0]
+        from_contact_id = int(from_raw) if str(from_raw).isdigit() and int(from_raw) else 0
+        to_contact_id = int(to_raw) if str(to_raw).isdigit() and int(to_raw) else 0
         amount = Decimal(params.get("amount", ["0"])[0])
         entry_date = params.get("entry_date", [""])[0]
         db_path = self._db_path_for(username)
         if action == "confirm":
             with connect(db_path) as conn:
                 from .contacts import add_ledger_entry, create_contact
+                from .settlement import upgrade_passthrough_siblings
+
+                # Prefer linking existing contacts; only create if still missing
                 if not from_contact_id:
-                    from_contact_id = create_contact(conn, "Unknown Sender")
+                    self.redirect(
+                        error="Link sender contact before confirming pass-through.",
+                        tab="contacts",
+                    )
+                    return
                 if not to_contact_id:
-                    to_contact_id = create_contact(conn, "Unknown Recipient")
-                e1 = add_ledger_entry(
-                    conn,
-                    contact_id=from_contact_id,
-                    transaction_id=credit_id,
-                    direction="they_sent",
-                    amount=amount,
-                    purpose="rolling",
-                    is_passthrough=True,
-                    entry_date=entry_date,
-                    created_by="user",
+                    self.redirect(
+                        error="Link recipient contact before confirming pass-through.",
+                        tab="contacts",
+                    )
+                    return
+
+                # Upgrade existing non-PT siblings when possible; else insert PT rows
+                up_from = upgrade_passthrough_siblings(
+                    conn, from_contact_id, credit_id, "they_sent", amount
                 )
-                e2 = add_ledger_entry(
-                    conn,
-                    contact_id=to_contact_id,
-                    transaction_id=debit_id,
-                    direction="you_sent",
-                    amount=amount,
-                    purpose="rolling",
-                    is_passthrough=True,
-                    passthrough_pair_id=e1,
-                    entry_date=entry_date,
-                    created_by="user",
+                up_to = upgrade_passthrough_siblings(
+                    conn, to_contact_id, debit_id, "you_sent", amount
                 )
+                e1 = None
+                if up_from == "none":
+                    e1 = add_ledger_entry(
+                        conn,
+                        contact_id=from_contact_id,
+                        transaction_id=credit_id,
+                        direction="they_sent",
+                        amount=amount,
+                        purpose="rolling",
+                        is_passthrough=True,
+                        entry_date=entry_date,
+                        created_by="user",
+                    )
+                if up_to == "none":
+                    add_ledger_entry(
+                        conn,
+                        contact_id=to_contact_id,
+                        transaction_id=debit_id,
+                        direction="you_sent",
+                        amount=amount,
+                        purpose="rolling",
+                        is_passthrough=True,
+                        passthrough_pair_id=e1,
+                        entry_date=entry_date,
+                        created_by="user",
+                    )
+                from .settlement import dedupe_ledger_conflicts
+
+                dedupe_ledger_conflicts(conn, from_contact_id, auto_apply=True)
+                dedupe_ledger_conflicts(conn, to_contact_id, auto_apply=True)
             self.redirect(message="Pass-through transaction confirmed.", tab="contacts")
         else:
             self.redirect(message="Pass-through suggestion dismissed.", tab="contacts")
@@ -734,25 +902,75 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8")
         params = urllib.parse.parse_qs(body)
         contact_id = int(params.get("contact_id", [0])[0])
+        amount_raw = params.get("amount", [""])[0].strip()
+        amount = Decimal(amount_raw) if amount_raw else None
         db_path = self._db_path_for(username)
-        with connect(db_path) as conn:
-            from .contacts import calculate_contact_balance, add_ledger_entry
-            bal = calculate_contact_balance(conn, contact_id)
-            net = bal["net_balance"]
-            if net != 0:
-                direction = "they_sent" if net > 0 else "you_sent"
-                add_ledger_entry(
+        try:
+            with connect(db_path) as conn:
+                from .settlement import record_settlement
+
+                bal = record_settlement(
                     conn,
                     contact_id=contact_id,
-                    transaction_id=None,
-                    direction=direction,
-                    amount=abs(net),
-                    purpose="settlement",
-                    notes="Settled balance",
-                    entry_date=datetime.now().strftime("%Y-%m-%d"),
+                    amount=amount,
                     created_by="user",
                 )
-        self.redirect(message="Balance marked as settled.", tab="contacts")
+            if bal.net == 0 and amount is None:
+                self.redirect(message="Balance marked as settled.", tab="contacts")
+            else:
+                self.redirect(
+                    message=f"Settlement recorded. Net now ₹{float(bal.net):,.2f}.",
+                    tab="contacts",
+                )
+        except ValueError as exc:
+            self.redirect(error=str(exc), tab="contacts")
+        except Exception as exc:
+            logger.exception("settle failed")
+            self.redirect(error=str(exc), tab="contacts")
+
+    def handle_materialize_shared(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        contact_id = int(params.get("contact_id", [0])[0])
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                from .settlement import materialize_virtual_shares
+
+                n = materialize_virtual_shares(conn, contact_id)
+            self.redirect(message=f"Materialized {n} shared share(s).", tab="contacts")
+        except Exception as exc:
+            self.redirect(error=str(exc), tab="contacts")
+
+    def handle_contacts_merge(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        winner_id = int(params.get("winner_id", [0])[0])
+        loser_raw = params.get("loser_ids", [""])[0]
+        losers = [int(x) for x in loser_raw.split(",") if x.strip().isdigit()]
+        force = "force" in params or params.get("force", ["0"])[0] == "1"
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                from .settlement import merge_contacts
+
+                result = merge_contacts(
+                    conn, winner_id, losers, auto_dedupe=True, force=force
+                )
+            voided = result.get("dedupe", {}).get("voided_count", 0)
+            self.redirect(
+                message=(
+                    f"Merged {len(losers)} contact(s) into #{winner_id}. "
+                    f"Reassigned {result.get('reassigned_ledger_rows', 0)} rows; "
+                    f"voided {voided} duplicates."
+                ),
+                tab="contacts",
+            )
+        except Exception as exc:
+            logger.exception("merge failed")
+            self.redirect(error=str(exc), tab="contacts")
 
 
 def run(host: str = "127.0.0.1", port: int = 8765) -> None:
