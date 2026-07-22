@@ -154,12 +154,18 @@ def init_db(conn: sqlite3.Connection) -> None:
     _safe_add_column(conn, "transactions", "source_txn_id", "INTEGER")
     _safe_add_column(conn, "classifications", "shared_with", "TEXT")
     _safe_add_column(conn, "ledger_entries", "direction", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "entry_type", "TEXT")
     _safe_add_column(conn, "ledger_entries", "purpose", "TEXT")
     _safe_add_column(conn, "ledger_entries", "is_passthrough", "INTEGER DEFAULT 0")
     _safe_add_column(conn, "ledger_entries", "passthrough_pair_id", "INTEGER")
     _safe_add_column(conn, "ledger_entries", "is_opening_balance", "INTEGER DEFAULT 0")
     _safe_add_column(conn, "ledger_entries", "entry_date", "TEXT")
     _safe_add_column(conn, "ledger_entries", "created_by", "TEXT DEFAULT 'user'")
+    try:
+        conn.execute("UPDATE ledger_entries SET entry_type = direction WHERE (entry_type IS NULL OR entry_type = '') AND direction IS NOT NULL")
+        conn.execute("UPDATE ledger_entries SET direction = entry_type WHERE (direction IS NULL OR direction = '') AND entry_type IS NOT NULL")
+    except Exception:
+        pass
     conn.commit()
     swept = apply_learned_rules_to_pending(conn)
     if swept:

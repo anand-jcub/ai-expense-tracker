@@ -137,15 +137,16 @@ def add_ledger_entry(
     cur = conn.execute(
         """
         INSERT INTO ledger_entries (
-            contact_id, transaction_id, direction, amount, purpose,
+            contact_id, transaction_id, direction, entry_type, amount, purpose,
             is_passthrough, passthrough_pair_id, is_opening_balance,
             notes, entry_date, created_by, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             contact_id,
             transaction_id,
+            direction,
             direction,
             str(amt),
             purpose,
@@ -165,7 +166,7 @@ def add_ledger_entry(
 def calculate_contact_balance(conn: sqlite3.Connection, contact_id: int) -> dict[str, Any]:
     rows = conn.execute(
         """
-        SELECT direction, amount, is_passthrough, is_opening_balance
+        SELECT coalesce(direction, entry_type) as direction, amount, is_passthrough, is_opening_balance
         FROM ledger_entries
         WHERE contact_id = ?
         """,
@@ -217,7 +218,7 @@ def get_contact_ledger(conn: sqlite3.Connection, contact_id: int) -> dict[str, A
         
     rows = conn.execute(
         """
-        SELECT l.*, t.merchant_display, t.description as tx_desc
+        SELECT l.*, coalesce(l.direction, l.entry_type) as direction, coalesce(l.entry_type, l.direction) as entry_type, t.merchant_display, t.description as tx_desc
         FROM ledger_entries l
         LEFT JOIN transactions t ON l.transaction_id = t.id
         WHERE l.contact_id = ?
