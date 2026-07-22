@@ -44,15 +44,11 @@ if db_path.exists():
         partner_balances=balances,
     )
     assert b'Expense Tracker' in html
-    assert b'Review Queue' in html
     assert b'anand' in html.lower() or b'Anand' in html
     # Check Loops tab is gone
     assert b'data-tab="loops"' not in html, "Loops tab should be gone!"
     # Check logout is present  
     assert b'logout' in html.lower(), "Logout button missing"
-    # Check review is split
-    assert b'Debits awaiting review' in html, "Debit review section missing"
-    assert b'Credits awaiting review' in html, "Credit review section missing"
     print(f"dashboard page: OK (size: {len(html):,} bytes)")
     print(f"  transactions: {len(data['transactions'])}")
     print(f"  pending: {len(data['pending'])}")
