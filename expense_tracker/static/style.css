@@ -359,37 +359,19 @@ button:active {
   transform: translateY(0);
 }
 
-a.button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 8px 16px;
-  background: var(--accent-glow);
-  color: var(--accent);
-  border: 1px solid transparent;
-  border-radius: 8px;
-  text-decoration: none;
-  font-weight: 600;
-  font-size: 13px;
-  transition: all 0.2s ease;
-}
-
-a.button:hover {
-  background: var(--accent);
-  color: #ffffff;
-  transform: translateY(-1px);
-}
-
+.button.subtle,
+button.subtle,
 a.button.subtle {
-  background: var(--bg);
-  color: var(--muted);
-  border-color: var(--line);
+  background: var(--surface-color, var(--bg));
+  color: var(--text-color, var(--ink));
+  border: 1px solid var(--border-color, var(--line));
 }
 
+.button.subtle:hover,
+button.subtle:hover,
 a.button.subtle:hover {
-  background: var(--panel-hover);
-  color: var(--ink);
+  background: var(--panel-hover, var(--background-color));
+  color: var(--text-color, var(--ink));
   border-color: var(--muted);
 }
 
@@ -1178,6 +1160,61 @@ a.home-chip:hover {
 /* ── People (khata) — list-first simplified UX ── */
 .people-page {
   width: 100%;
+}
+
+.people-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.people-search {
+  flex: 1 1 180px;
+  min-width: 160px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color, var(--line));
+  background: var(--surface-color, var(--bg));
+  color: var(--text-color, var(--ink));
+  font-size: 14px;
+}
+
+.people-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.people-filter {
+  border: 1px solid var(--border-color, var(--line)) !important;
+  background: var(--surface-color, var(--bg)) !important;
+  color: var(--muted) !important;
+  border-radius: 999px !important;
+  padding: 6px 14px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  cursor: pointer;
+  box-shadow: none !important;
+  transform: none !important;
+  min-height: auto !important;
+}
+
+.people-filter.active {
+  background: var(--accent, #3b82f6) !important;
+  color: #ffffff !important;
+  border-color: transparent !important;
+}
+
+.people-row-main {
+  background: transparent !important;
+  border: 0 !important;
+  color: inherit !important;
+  box-shadow: none !important;
+  transform: none !important;
+  min-height: auto !important;
+  text-align: left;
 }
 
 .people-cards-grid {

@@ -1631,7 +1631,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=16">
+  <link rel="stylesheet" href="/style.css?v=25">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1838,7 +1838,7 @@ def page(
   </div>
   
   {mobile_nav_html}
-  <script src="/app.js?v=15"></script>
+  <script src="/app.js?v=25"></script>
 </body>
 </html>
 """
