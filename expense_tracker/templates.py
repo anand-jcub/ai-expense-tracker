@@ -1584,19 +1584,10 @@ def page(
         and not (_row_field(r, "shared_with") or _row_field(r, "shared_with_contact_id"))
         and float(_row_field(r, "debit") or 0) > 0
     )
-    # Onboarding from live counts
-    try:
-        from .db import onboarding_status as _onboarding_status
-        # page() has no conn — use data counts if present
-        onboarding = data.get("onboarding")
-    except Exception:
-        onboarding = None
-    home_onboarding_html = render_onboarding_checklist(onboarding)
+    # Classic Home keeps attention + spend only; settlement/NL/onboarding live in React /app/
     home_attention_html = render_home_attention_strip(
         attention_review_count, attention_pt_count, open_shared_null
     )
-    home_nl_html = render_home_nl_box()
-    home_settlement_html = render_home_settlement_strip(partner_balances)
     mobile_nav_html = render_mobile_bottom_nav(pending_badge_count)
     editable_all = [row for row in data["transactions"] if row["status"] != "needs_review"]
     filtered_edit = filter_editable_rows(data["transactions"], edit_search)
@@ -1733,7 +1724,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=14">
+  <link rel="stylesheet" href="/style.css?v=15">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1795,12 +1786,9 @@ def page(
     <main class="main-content">
       <div id="toast-container" class="toast-container" data-message="{esc(message)}" data-error="{esc(error)}"></div>
 
-      <!-- Tab 1: Dashboard -->
+      <!-- Tab 1: Dashboard (spend only — who-owes / NL / onboarding → /app/) -->
       <div id="pane-dashboard" class="tab-pane active">
-        {home_onboarding_html}
         {home_attention_html}
-        {home_nl_html}
-        {home_settlement_html}
 
         {render_dashboard_filters(start_date, end_date, min_date, max_date, exclude_business, use_my_share)}
         
