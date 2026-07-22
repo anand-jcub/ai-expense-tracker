@@ -649,81 +649,84 @@
     return false;
   };
 
-  /* ── Contact Ledger Drawer & Modal JS ── */
+  /* ── People (khata) UX ── */
+  window._drawerContactId = null;
+  window._drawerContactName = '';
+  window._drawerSettleNet = 0;
+  window._peopleStatusFilter = 'active';
+
+  window.openPeopleModal = function (id) {
+    var el = document.getElementById(id);
+    if (el) el.hidden = false;
+  };
+
+  window.closePeopleModal = function (id) {
+    var el = document.getElementById(id);
+    if (el) el.hidden = true;
+  };
+
   window.openAddLedgerModal = function (contactId, contactName) {
-    document.getElementById('ledger-modal-contact-id').value = contactId;
-    document.getElementById('ledger-modal-contact-name').innerText = contactName;
-    document.getElementById('ledger-modal-date').value = new Date().toISOString().split('T')[0];
-    document.getElementById('modal-add-ledger').style.display = 'flex';
+    var idEl = document.getElementById('ledger-modal-contact-id');
+    var nameEl = document.getElementById('ledger-modal-contact-name');
+    var dateEl = document.getElementById('ledger-modal-date');
+    if (idEl) idEl.value = contactId;
+    if (nameEl) nameEl.textContent = contactName || '';
+    if (dateEl) dateEl.value = new Date().toISOString().split('T')[0];
+    openPeopleModal('modal-add-ledger');
   };
 
   window.closeLedgerDrawer = function () {
     var drawer = document.getElementById('ledger-drawer');
     var backdrop = document.getElementById('ledger-drawer-backdrop');
-    if (drawer) drawer.style.display = 'none';
-    if (backdrop) backdrop.style.display = 'none';
+    if (drawer) drawer.hidden = true;
+    if (backdrop) backdrop.hidden = true;
   };
 
-  window.filterContactCards = function () {
+  function peopleQueryMatch(row, query) {
+    if (!query) return true;
+    var name = row.getAttribute('data-name') || '';
+    var aliases = row.getAttribute('data-aliases') || '';
+    return name.indexOf(query) !== -1 || aliases.indexOf(query) !== -1;
+  }
+
+  function applyPeopleFilters() {
     var input = document.getElementById('contact-search-input');
-    if (!input) return;
-    var query = input.value.toLowerCase().trim();
-    var cards = document.querySelectorAll('#contacts-grid .contact-card');
-    cards.forEach(function (card) {
-      var name = card.getAttribute('data-name') || '';
-      var aliases = card.getAttribute('data-aliases') || '';
-      if (!query || name.includes(query) || aliases.includes(query)) {
-        card.style.display = 'flex';
-      } else {
-        card.style.display = 'none';
-      }
-    });
-  };
-
-  window.filterContactStatus = function (status, btn) {
-    var pills = document.querySelectorAll('.filter-pill[data-filter]');
-    pills.forEach(function (p) { p.classList.remove('active'); p.classList.add('subtle'); });
-    if (btn) { btn.classList.add('active'); btn.classList.remove('subtle'); }
-
-    var cards = document.querySelectorAll('#contacts-grid .contact-card');
-    cards.forEach(function (card) {
-      var cardStatus = card.getAttribute('data-status');
-      if (status === 'all' || cardStatus === status) {
-        card.style.display = 'flex';
-      } else {
-        card.style.display = 'none';
-      }
-    });
-  };
-
-  window.filterDrawerEntries = function (dir, btn) {
-    var parent = btn ? btn.parentElement : null;
-    if (parent) {
-      parent.querySelectorAll('.filter-pill').forEach(function (p) { p.classList.remove('active'); p.classList.add('subtle'); });
-      btn.classList.add('active'); btn.classList.remove('subtle');
-    }
-    var rows = document.querySelectorAll('#drawer-entries-list .ledger-row');
+    var query = input ? input.value.toLowerCase().trim() : '';
+    var status = window._peopleStatusFilter || 'active';
+    var rows = document.querySelectorAll('.contact-card');
     rows.forEach(function (row) {
-      var rowDir = row.getAttribute('data-direction');
-      if (dir === 'all' || rowDir === dir) {
-        row.style.display = 'block';
-      } else {
-        row.style.display = 'none';
-      }
+      var rowStatus = row.getAttribute('data-status') || '';
+      var quiet = row.getAttribute('data-quiet') === '1';
+      var statusOk = true;
+      if (status === 'active') statusOk = !quiet && rowStatus !== 'settled';
+      else if (status === 'all') statusOk = true;
+      else statusOk = rowStatus === status;
+      var show = statusOk && peopleQueryMatch(row, query);
+      row.style.display = show ? '' : 'none';
     });
+    // When searching everyone or "all", open quiet panel so settled rows are reachable
+    var quietPanel = document.getElementById('people-quiet-panel');
+    if (quietPanel && (query || status === 'all' || status === 'settled')) {
+      quietPanel.open = true;
+    }
+  }
+
+  window.filterPeopleList = function () {
+    applyPeopleFilters();
   };
 
-  window._drawerSettleNet = 0;
+  // Backward-compatible names used by older markup
+  window.filterContactCards = window.filterPeopleList;
+  window.filterContactStatus = function (status, btn) {
+    window.filterPeopleStatus(status, btn);
+  };
 
-  window.fillFullSettleAmount = function () {
-    var inp = document.getElementById('drawer-settle-amount');
-    if (!inp) return;
-    var absNet = Math.abs(window._drawerSettleNet || 0);
-    if (absNet > 0) {
-      inp.value = absNet.toFixed(2);
-    } else {
-      inp.value = '';
-    }
+  window.filterPeopleStatus = function (status, btn) {
+    window._peopleStatusFilter = status || 'active';
+    document.querySelectorAll('.people-filter').forEach(function (p) {
+      p.classList.toggle('active', p === btn);
+    });
+    applyPeopleFilters();
   };
 
   window.confirmSettle = function () {
@@ -735,28 +738,44 @@
       return false;
     }
     if (raw > absNet + 0.001) {
-      alert('Amount cannot exceed outstanding balance of ₹' + absNet.toLocaleString('en-IN'));
+      alert('Amount cannot exceed ₹' + absNet.toLocaleString('en-IN'));
       return false;
     }
-    var label = (inp && inp.value) ? ('₹' + raw.toLocaleString('en-IN')) : 'full balance';
-    return confirm('Settle ' + label + '?');
+    var label = (inp && inp.value) ? ('₹' + raw.toLocaleString('en-IN')) : 'the full balance';
+    return confirm('Mark ' + label + ' as settled?');
   };
+
+  function purposeLabel(purpose, isPt, isOpening) {
+    if (isPt) return 'Rolling (pass-through)';
+    if (isOpening || purpose === 'opening_balance') return 'Starting balance';
+    if (!purpose) return 'Entry';
+    return String(purpose).replace(/_/g, ' ');
+  }
 
   window.openLedgerDrawer = function (contactId, contactName) {
     var drawer = document.getElementById('ledger-drawer');
     var backdrop = document.getElementById('ledger-drawer-backdrop');
     if (!drawer) return;
-    if (backdrop) backdrop.style.display = 'block';
-    drawer.style.display = 'flex';
-    document.getElementById('drawer-contact-name').innerText = contactName + ' — History';
+    window._drawerContactId = contactId;
+    window._drawerContactName = contactName || '';
+    if (backdrop) backdrop.hidden = false;
+    drawer.hidden = false;
+    document.getElementById('drawer-contact-name').textContent = contactName || 'History';
     document.getElementById('drawer-settle-contact-id').value = contactId;
     var settleAmt = document.getElementById('drawer-settle-amount');
     if (settleAmt) settleAmt.value = '';
     window._drawerSettleNet = 0;
 
+    var addBtn = document.getElementById('drawer-add-money-btn');
+    if (addBtn) {
+      addBtn.onclick = function () {
+        openAddLedgerModal(contactId, contactName);
+      };
+    }
+
     var listEl = document.getElementById('drawer-entries-list');
     var summaryEl = document.getElementById('drawer-balance-summary');
-    listEl.innerHTML = '<p class="empty">Loading ledger history...</p>';
+    listEl.innerHTML = '<p class="empty">Loading…</p>';
     summaryEl.innerHTML = '';
 
     fetch('/api/contacts/ledger?contact_id=' + contactId)
@@ -767,90 +786,69 @@
           return;
         }
 
-        // Support both flat API shape and accidental nested payload.
-        var bal = data.balance || (data.entries && data.entries.balance) || {};
-        var entries = Array.isArray(data.entries)
-          ? data.entries
-          : (data.entries && Array.isArray(data.entries.entries) ? data.entries.entries : []);
-        var virtualLines = Array.isArray(data.virtual_shared_lines) ? data.virtual_shared_lines : [];
+        var bal = data.balance || {};
+        var entries = Array.isArray(data.entries) ? data.entries : [];
         var net = (bal.net_balance != null ? bal.net_balance : bal.net) || 0;
         window._drawerSettleNet = net;
         if (settleAmt) {
-          settleAmt.max = Math.abs(net).toFixed(2);
           settleAmt.placeholder = Math.abs(net) > 0
-            ? ('Full = ₹' + Math.abs(net).toLocaleString('en-IN'))
-            : 'Already settled';
-        }
-        var statusColor = net > 0 ? 'var(--success)' : net < 0 ? 'var(--error)' : 'var(--muted)';
-        var statusText = net > 0 ? ('Owes you ₹' + net.toLocaleString('en-IN')) :
-          net < 0 ? ('You owe ₹' + Math.abs(net).toLocaleString('en-IN')) : 'Settled (₹0)';
-        var ledgerNet = bal.ledger_net != null ? bal.ledger_net : null;
-        var virtualNet = bal.virtual_shared_net != null ? bal.virtual_shared_net : 0;
-        var ptExcl = bal.passthrough_excluded_net != null ? bal.passthrough_excluded_net : null;
-
-        var extra = '';
-        if (ledgerNet != null || virtualNet || ptExcl) {
-          extra = '<div style="margin-top:10px; font-size:11px; color:var(--muted); display:flex; flex-wrap:wrap; gap:10px;">' +
-            (ledgerNet != null ? '<span>Ledger: ₹' + Number(ledgerNet).toLocaleString('en-IN') + '</span>' : '') +
-            '<span>Open shared: ₹' + Number(virtualNet).toLocaleString('en-IN') + '</span>' +
-            (ptExcl != null ? '<span>Rolling excl.: ₹' + Number(ptExcl).toLocaleString('en-IN') + '</span>' : '') +
-            '</div>';
+            ? ('Full ₹' + Math.abs(net).toLocaleString('en-IN'))
+            : 'Settled';
         }
 
-        summaryEl.innerHTML =
-          '<div style="display:flex; justify-content:space-between; align-items:center;">' +
-          '<div><span style="font-size:12px; color:var(--muted); text-transform:uppercase; font-weight:600;">Net Balance Position (USB)</span>' +
-          '<strong style="display:block; font-size:18px; color:' + statusColor + ';">' + statusText + '</strong></div>' +
-          '<div style="text-align:right; font-size:12px; color:var(--muted);">' +
-          '<div>Given: <strong style="color:var(--text-color);">₹' + (bal.total_you_sent || 0).toLocaleString('en-IN') + '</strong></div>' +
-          '<div>Received: <strong style="color:var(--text-color);">₹' + (bal.total_they_sent || 0).toLocaleString('en-IN') + '</strong></div>' +
-          '</div></div>' + extra;
+        var cls = net > 0 ? 'pos' : net < 0 ? 'neg' : '';
+        var statusText = net > 0
+          ? ('Owes you <strong class="pos">₹' + Number(net).toLocaleString('en-IN') + '</strong>')
+          : net < 0
+            ? ('You owe <strong class="neg">₹' + Math.abs(net).toLocaleString('en-IN') + '</strong>')
+            : '<strong>Settled · ₹0</strong>';
+        summaryEl.innerHTML = statusText +
+          '<br><span style="font-size:12px;color:var(--muted)">You paid ₹' +
+          Number(bal.total_you_sent || 0).toLocaleString('en-IN') +
+          ' · They paid ₹' +
+          Number(bal.total_they_sent || 0).toLocaleString('en-IN') +
+          '</span>';
 
-        if (!entries.length && !virtualLines.length) {
-          listEl.innerHTML = '<p class="empty">No entries logged yet.</p>';
+        if (!entries.length) {
+          listEl.innerHTML = '<p class="empty">No history yet. Tap + Money to add a loan or split.</p>';
           return;
         }
 
-        var html = '<div style="display:flex; flex-direction:column; gap:12px;">';
-        entries.forEach(function (e) {
+        // Newest first for easier scanning
+        var sorted = entries.slice().reverse();
+        var html = '';
+        sorted.forEach(function (e) {
           var isYou = e.direction === 'you_sent' || e.entry_type === 'you_sent';
-          var color = isYou ? 'var(--success)' : 'var(--error)';
-          var icon = isYou ? '↗' : '↘';
-          var prefix = isYou ? '+ ' : '- ';
-          var passthroughBadge = e.is_passthrough ? '<span class="badge subtle" style="font-size:10px; margin-left:6px;">⚡ Pass-Through</span>' : '';
-          var openingBadge = e.is_opening_balance ? '<span class="badge warn" style="font-size:10px; margin-left:6px;">Opening</span>' : '';
-          var noteText = e.notes ? ('<div style="font-size:12px; color:var(--muted); margin-top:4px;">' + e.notes + '</div>') : '';
-          var purposeText = e.purpose ? ('<span class="badge subtle" style="font-size:10px; text-transform:capitalize;">' + String(e.purpose).replace('_', ' ') + '</span>') : '';
-
-          html += '<div class="ledger-row" data-direction="' + (isYou ? 'you_sent' : 'they_sent') + '" style="background:var(--background-color); border:1px solid var(--border-color); border-radius:10px; padding:12px;">' +
-            '<div style="display:flex; justify-content:space-between; align-items:center;">' +
-            '<div style="display:flex; align-items:center; gap:8px;">' +
-            '<span style="font-size:16px; font-weight:bold; color:' + color + ';">' + icon + '</span>' +
-            '<span style="font-size:13px; font-weight:500;">' + (e.entry_date || '') + '</span>' +
-            '</div>' +
-            '<strong style="font-size:15px; color:' + color + ';">' + prefix + '₹' + (e.amount || 0).toLocaleString('en-IN') + '</strong>' +
-            '</div>' +
-            '<div style="margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; gap:4px;">' + purposeText + passthroughBadge + openingBadge + '</div>' +
-            noteText +
+          var isPt = !!e.is_passthrough;
+          var amtCls = isYou ? 'pos' : 'neg';
+          var arrow = isYou ? '↗ ' : '↘ ';
+          var prefix = isYou ? '+' : '−';
+          var label = purposeLabel(e.purpose, isPt, e.is_opening_balance);
+          var note = e.notes ? (' · ' + e.notes) : '';
+          var run = (e.running_balance != null && !isPt)
+            ? ('Balance: ₹' + Number(e.running_balance).toLocaleString('en-IN'))
+            : (isPt ? 'Pass-through' : '');
+          html += '<div class="people-hist-row' + (isPt ? ' is-pt' : '') + '" data-direction="' + (isYou ? 'you_sent' : 'they_sent') + '">' +
+            '<div class="people-hist-date">' + (e.entry_date || '') + '</div>' +
+            '<div class="people-hist-desc"><strong>' + arrow + label + '</strong><span>' +
+            (isYou ? 'You paid' : 'They paid') + note + '</span></div>' +
+            '<div class="people-hist-amt ' + amtCls + '">' + prefix + '₹' +
+            Number(e.amount || 0).toLocaleString('en-IN') + '</div>' +
+            (run ? '<div class="people-hist-balance">' + run + '</div>' : '') +
             '</div>';
         });
-        if (virtualLines.length) {
-          html += '<div style="margin-top:8px; padding-top:12px; border-top:1px dashed var(--border-color);">' +
-            '<div style="font-size:12px; font-weight:600; color:var(--muted); margin-bottom:8px;">Open shared (not yet posted)</div>';
-          virtualLines.forEach(function (e) {
-            html += '<div class="ledger-row" style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.25); border-radius:10px; padding:12px; margin-bottom:8px;">' +
-              '<div style="display:flex; justify-content:space-between;"><span>' + (e.date || '') + '</span>' +
-              '<strong style="color:var(--accent);">+ ₹' + (e.amount || 0).toLocaleString('en-IN') + '</strong></div>' +
-              '<div style="font-size:12px; color:var(--muted); margin-top:4px;">' + (e.notes || 'Shared expense') + '</div></div>';
-          });
-          html += '</div>';
-        }
-        html += '</div>';
         listEl.innerHTML = html;
       })
       .catch(function (err) {
         console.error('Error fetching ledger:', err);
-        listEl.innerHTML = '<p class="empty error">Failed to load ledger history.</p>';
+        listEl.innerHTML = '<p class="empty error">Could not load history.</p>';
       });
   };
+
+  // Close people modals on backdrop click
+  document.querySelectorAll('.people-modal').forEach(function (modal) {
+    modal.addEventListener('click', function (e) {
+      if (e.target === modal) modal.hidden = true;
+    });
+  });
 })();

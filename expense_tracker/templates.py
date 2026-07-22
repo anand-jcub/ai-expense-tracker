@@ -283,166 +283,96 @@ def render_contacts_section(
     partner_balances: list[dict] | None = None,
     merge_suggestions: list[dict] | None = None,
 ) -> str:
-    # Compute aggregate metrics
+    """Rich People (khata) UX: summary metrics, responsive contact cards grid, and tools."""
+    _ = merge_suggestions, partner_balances
+    import json as _json
+    from datetime import date as _date
+
+    today = _date.today().isoformat()
+    contact_opts = _contact_option_tags(contacts)
+
     total_owes_you = Decimal("0")
     total_you_owe = Decimal("0")
+    cards_items: list[dict] = []
+
     for item in contacts:
         bal = item["balance"]
-        net = Decimal(str(bal["net_balance"]))
+        net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
         if net > 0:
             total_owes_you += net
         elif net < 0:
             total_you_owe += abs(net)
+        cards_items.append(item)
 
-    # Khata Summary Cards
-    summary_cards_html = f"""
-    <div class="grid metrics" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:20px;">
-      <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; padding:16px;">
-        <span style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net Owed to You</span>
-        <strong style="display:block; margin-top:4px; font-size:22px; color:var(--success);">{money(total_owes_you)}</strong>
-      </div>
-      <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; padding:16px;">
-        <span style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net You Owe</span>
-        <strong style="display:block; margin-top:4px; font-size:22px; color:var(--error);">{money(total_you_owe)}</strong>
-      </div>
-      <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; padding:16px;">
-        <span style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Active Contacts</span>
-        <strong style="display:block; margin-top:4px; font-size:22px; color:var(--text-color);">{len(contacts)}</strong>
-      </div>
-    </div>
-    """
+    cards_items.sort(
+        key=lambda it: abs(Decimal(str(it["balance"].get("net_balance", it["balance"].get("net", 0))))),
+        reverse=True,
+    )
 
-    # Who owes whom (on People)
-    people_settlement_html = render_home_settlement_strip(partner_balances or [], limit=8)
+    colors = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ec4899", "#06b6d4"]
 
-    # Contact select options (rolling, opening, PT pickers, manual merge)
-    contact_opts = _contact_option_tags(contacts)
+    def _card(idx: int, item: dict) -> str:
+        contact = item["contact"]
+        bal = item["balance"]
+        cid = contact["id"]
+        cname = contact["name"] or "?"
+        aliases = contact.get("aliases") or []
+        aliases_str = ", ".join(aliases)
+        net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
+        total_sent = bal.get("total_you_sent", bal.get("total_sent", 0))
+        total_rec = bal.get("total_they_sent", bal.get("total_received", 0))
+        entries = int(bal.get("entry_count") or 0)
+        js_name = _json.dumps(cname)
+        avatar_bg = colors[idx % len(colors)]
+        initial = cname[0].upper() if cname else "?"
 
-    # Merge suggestions
-    merge_html = ""
-    if merge_suggestions:
-        cards = []
-        for sug in merge_suggestions[:6]:
-            losers = ", ".join(esc(n) for n in sug.get("loser_names") or [])
-            loser_ids = ",".join(str(i) for i in sug.get("loser_ids") or [])
-            cards.append(
-                f"""
-                <div class="merge-suggest-card">
-                  <div class="merge-suggest-body">
-                    <strong>Merge into {esc(sug.get('winner_name') or '?')}</strong>
-                    <span class="merge-suggest-meta">Also: {losers}</span>
-                    <span class="merge-suggest-reason">{esc(sug.get('reason') or '')}</span>
-                  </div>
-                  <form method="post" action="/contacts/merge" class="merge-suggest-form"
-                        onsubmit="return confirm('Merge these contacts into {esc(sug.get('winner_name') or '')}? Ledger rows will be combined and duplicates cleaned.');">
-                    <input type="hidden" name="winner_id" value="{sug.get('winner_id')}">
-                    <input type="hidden" name="loser_ids" value="{loser_ids}">
-                    <button type="submit" class="button">Merge</button>
-                  </form>
-                </div>
-                """
-            )
-        merge_html = f"""
-        <section class="home-strip merge-suggestions" aria-label="Merge suggestions">
-          <div class="home-strip-header">
-            <h2>Suggested merges</h2>
-            <span class="home-chip muted" style="padding:4px 10px; font-size:11px;">{len(merge_suggestions)} cluster(s)</span>
+        if net > 0:
+            status_code = "owes_you"
+            status_text = f"Owes you {money(net)}"
+            badge_style = "background:rgba(16,185,129,0.12); color:#10b981; border:1px solid rgba(16,185,129,0.3);"
+        elif net < 0:
+            status_code = "you_owe"
+            status_text = f"You owe {money(abs(net))}"
+            badge_style = "background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.3);"
+        else:
+            status_code = "settled"
+            status_text = "Settled (₹0)"
+            badge_style = "background:var(--border-color); color:var(--muted);"
+
+        quiet_flag = "1" if net == 0 else "0"
+
+        return f"""
+        <div class="contact-card people-card" data-name="{esc(cname.lower())}" data-aliases="{esc(aliases_str.lower())}" data-status="{status_code}" data-quiet="{quiet_flag}">
+          <div class="people-card-header">
+            <div class="people-card-identity">
+              <div class="people-avatar" style="background:{avatar_bg};">{esc(initial)}</div>
+              <div class="people-card-titles">
+                <h3 class="people-name">{esc(cname)}</h3>
+                {f'<span class="people-aliases">{esc(aliases_str[:35])}</span>' if aliases_str else f'<span class="people-meta">{entries} entr{"y" if entries == 1 else "ies"}</span>'}
+              </div>
+            </div>
+            <span class="people-badge" style="{badge_style}">{esc(status_text)}</span>
           </div>
-          <div class="merge-suggest-list">{"".join(cards)}</div>
-          <p class="empty" style="margin:8px 0 0; font-size:12px;">Merging reassigns ledger rows to the winner and voids migrate/pass-through duplicates.</p>
-        </section>
+          <div class="people-card-stats">
+            <div><span>You sent:</span> <strong>{money(total_sent)}</strong></div>
+            <div><span>They sent:</span> <strong>{money(total_rec)}</strong></div>
+          </div>
+          <div class="people-card-actions">
+            <button type="button" class="button subtle" onclick='openLedgerDrawer({cid}, {js_name})'>View Ledger</button>
+            <button type="button" class="button" onclick='openAddLedgerModal({cid}, {js_name})'>+ Entry</button>
+          </div>
+        </div>
         """
 
-    # Search & Filter Controls
-    search_bar_html = """
-    <div style="display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; margin-bottom:20px;">
-      <div style="flex:1; min-width:240px; max-width:400px; position:relative;">
-        <input id="contact-search-input" onkeyup="filterContactCards()" placeholder="Search contact by name or handle..." style="width:100%; padding:10px 14px 10px 36px; border-radius:20px; border:1px solid var(--border-color); background:var(--surface-color); color:var(--text-color); font-size:14px;">
-        <svg viewBox="0 0 24 24" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); width:16px; height:16px; fill:var(--muted);"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-      </div>
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button class="button filter-pill active" data-filter="all" onclick="filterContactStatus('all', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">All</button>
-        <button class="button subtle filter-pill" data-filter="owes_you" onclick="filterContactStatus('owes_you', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">Owes Me</button>
-        <button class="button subtle filter-pill" data-filter="you_owe" onclick="filterContactStatus('you_owe', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">I Owe</button>
-        <button class="button subtle filter-pill" data-filter="settled" onclick="filterContactStatus('settled', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">Settled</button>
-        <button class="button" onclick="document.getElementById('modal-add-contact').style.display='flex'" style="padding:6px 16px; font-size:13px; border-radius:20px;">+ New Contact</button>
-        <button class="button subtle" type="button" onclick="document.getElementById('modal-manual-merge').style.display='flex'" style="padding:6px 16px; font-size:13px; border-radius:20px;">Manual merge</button>
-      </div>
-    </div>
-    """
+    cards_html = "".join(_card(idx, item) for idx, item in enumerate(cards_items)) or (
+        '<p class="empty people-empty">No contacts found. Add a person or log a loan.</p>'
+    )
 
-    # Rolling mode + Opening balance (user's main real-world workflows)
-    today = __import__("datetime").date.today().isoformat()
-    workflow_html = f"""
-    <div class="people-workflow-grid">
-      <section class="home-strip rolling-panel" aria-label="Rolling mode">
-        <div class="home-strip-header">
-          <h2>Rolling mode</h2>
-          <span class="home-chip accent" style="padding:4px 10px; font-size:11px;">A → you → B · nets stay 0</span>
-        </div>
-        <p class="empty" style="margin:0 0 12px; font-size:13px;">
-          e.g. Ranjima sends you ₹20,000 → you send Highnes ₹20,000. Both legs pass-through (not personal debt).
-        </p>
-        <form method="post" action="/ledger/rolling" class="workflow-form"
-              onsubmit="return confirm('Post rolling chain? Neither person\\'s debt net should change.');">
-          <label>Money received from
-            <select name="from_contact_id" required>{contact_opts}</select>
-          </label>
-          <label>Money sent to
-            <select name="to_contact_id" required>{contact_opts}</select>
-          </label>
-          <label>Amount (₹)
-            <input type="number" name="amount" step="0.01" min="0.01" required placeholder="20000">
-          </label>
-          <label>Date
-            <input type="date" name="entry_date" value="{today}">
-          </label>
-          <label class="workflow-notes">Note (optional)
-            <input type="text" name="notes" placeholder="e.g. Highnes needed 20k, Ranjima funded">
-          </label>
-          <button type="submit" class="button">Post rolling chain</button>
-        </form>
-      </section>
-
-      <section class="home-strip opening-panel" aria-label="Opening balance">
-        <div class="home-strip-header">
-          <h2>Opening / stock balance</h2>
-          <span class="home-chip muted" style="padding:4px 10px; font-size:11px;">one click</span>
-        </div>
-        <p class="empty" style="margin:0 0 12px; font-size:13px;">
-          e.g. Highnes already owes you ₹50,000 before this month&apos;s bank lines.
-        </p>
-        <form method="post" action="/ledger/opening" class="workflow-form"
-              onsubmit="return confirm('Set opening balance for this person?');">
-          <label>Person
-            <select name="contact_id" required>{contact_opts}</select>
-          </label>
-          <label>Direction
-            <select name="direction">
-              <option value="they_owe_you" selected>They owe me</option>
-              <option value="you_owe_them">I owe them</option>
-            </select>
-          </label>
-          <label>Amount (₹)
-            <input type="number" name="amount" step="0.01" min="0.01" required placeholder="50000">
-          </label>
-          <label>Date
-            <input type="date" name="entry_date" value="{today}">
-          </label>
-          <label class="workflow-notes">Note (optional)
-            <input type="text" name="notes" placeholder="e.g. Prior balance before June">
-          </label>
-          <button type="submit" class="button">Set opening</button>
-        </form>
-      </section>
-    </div>
-    """
-
-    # Pass-through banner with contact pickers when unlinked
-    banner_html = ""
+    # Rolling money suggestions
+    pt_html = ""
     if passthrough_candidates:
-        candidate_items = []
-        for cand in passthrough_candidates[:5]:
+        pt_items = []
+        for cand in passthrough_candidates[:4]:
             amt = cand.get("credit_amount") or cand.get("amount") or 0
             from_name = cand.get("credit_contact") or cand.get("credit_merchant") or "Unknown"
             to_name = cand.get("debit_contact") or cand.get("debit_merchant") or "Unknown"
@@ -451,126 +381,123 @@ def render_contacts_section(
             debit_id = cand.get("debit_tx_id") or cand.get("debit_id") or 0
             from_contact_id = cand.get("from_contact_id") or 0
             to_contact_id = cand.get("to_contact_id") or 0
-            needs_from = not from_contact_id
-            needs_to = not to_contact_id
             from_field = (
-                f'<label class="pt-pick">From (received)<select name="from_contact_id" required>{_contact_option_tags(contacts, from_contact_id or None)}</select></label>'
-                if needs_from
+                f'<label>From<select name="from_contact_id" required>{_contact_option_tags(contacts, from_contact_id or None)}</select></label>'
+                if not from_contact_id
                 else f'<input type="hidden" name="from_contact_id" value="{from_contact_id}">'
             )
             to_field = (
-                f'<label class="pt-pick">To (forwarded)<select name="to_contact_id" required>{_contact_option_tags(contacts, to_contact_id or None)}</select></label>'
-                if needs_to
+                f'<label>To<select name="to_contact_id" required>{_contact_option_tags(contacts, to_contact_id or None)}</select></label>'
+                if not to_contact_id
                 else f'<input type="hidden" name="to_contact_id" value="{to_contact_id}">'
             )
-            warn = ""
-            if needs_from or needs_to:
-                warn = '<div class="pt-warn">Link missing contact(s) before confirming.</div>'
-            candidate_items.append(
+            pt_items.append(
                 f"""
-                <div class="passthrough-card">
-                  <div class="passthrough-card-main">
-                    <strong class="pt-title">⚡ Pass-through candidate</strong>
-                    <div>Received <strong>{money(amt)}</strong> from <strong>{esc(from_name)}</strong>
-                    → forwarded to <strong>{esc(to_name)}</strong> on {esc(dt)}</div>
-                    {warn}
+                <div class="people-pt-item">
+                  <div class="people-pt-copy">
+                    <strong>{money(amt)}</strong>
+                    <span>{esc(from_name)} → you → {esc(to_name)}</span>
+                    <span class="people-meta">{esc(dt)}</span>
                   </div>
-                  <form method="post" action="/ledger/passthrough/confirm" class="passthrough-form">
+                  <form method="post" action="/ledger/passthrough/confirm" class="people-pt-form">
                     <input type="hidden" name="credit_id" value="{credit_id}">
                     <input type="hidden" name="debit_id" value="{debit_id}">
                     <input type="hidden" name="amount" value="{amt}">
                     <input type="hidden" name="entry_date" value="{dt}">
-                    <div class="pt-pickers">{from_field}{to_field}</div>
-                    <div class="pt-actions">
-                      <button type="submit" name="action" value="confirm" class="button">Confirm pass-through</button>
-                      <button type="submit" name="action" value="dismiss" class="button subtle" formnovalidate>Dismiss</button>
+                    {from_field}{to_field}
+                    <div class="people-pt-actions">
+                      <button type="submit" name="action" value="confirm" class="button">Mark as rolling</button>
+                      <button type="submit" name="action" value="dismiss" class="button subtle" formnovalidate>Skip</button>
                     </div>
                   </form>
                 </div>
                 """
             )
-        banner_html = f'<div class="passthrough-candidates-banner">{"".join(candidate_items)}</div>'
+        pt_html = f"""
+        <details class="people-tools">
+          <summary>Possible rolling money <span class="people-chip">{len(passthrough_candidates[:4])}</span></summary>
+          <p class="empty people-hint">Bank pairs that look like A → you → B. Confirm only if you were just a middle person (does not change net balances).</p>
+          <div class="people-pt-list">{"".join(pt_items)}</div>
+        </details>
+        """
 
-    # Contacts Cards Grid
-    cards_html = []
-    colors = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ec4899", "#06b6d4"]
-    
-    for idx, item in enumerate(contacts):
-        contact = item["contact"]
-        bal = item["balance"]
-        cid = contact["id"]
-        cname = contact["name"]
-        aliases = contact.get("aliases", [])
-        aliases_str = ", ".join(aliases) if aliases else ""
-        net = bal["net_balance"]
-        total_sent = bal["total_you_sent"]
-        total_rec = bal["total_they_sent"]
-        
-        if net > 0:
-            status_text = f"Owes you {money(net)}"
-            status_code = "owes_you"
-            badge_style = "background:rgba(16,185,129,0.12); color:#10b981; border:1px solid rgba(16,185,129,0.3);"
-        elif net < 0:
-            status_text = f"You owe {money(abs(net))}"
-            status_code = "you_owe"
-            badge_style = "background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.3);"
-        else:
-            status_text = "Settled (₹0)"
-            status_code = "settled"
-            badge_style = "background:var(--border-color); color:var(--muted);"
-            
-        initial = cname[0].upper() if cname else "?"
-        avatar_bg = colors[idx % len(colors)]
-        
-        cards_html.append(
-            f"""
-            <div class="contact-card" data-name="{esc(cname.lower())}" data-aliases="{esc(aliases_str.lower())}" data-status="{status_code}" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.25s ease;" onmouseover="this.style.transform='translateY(-4px)';this.style.boxShadow='0 8px 24px rgba(0,0,0,0.12)';" onmouseout="this.style.transform='none';this.style.boxShadow='none';">
-              <div>
-                <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:14px;">
-                  <div style="display:flex; align-items:center; gap:12px;">
-                    <div style="width:42px; height:42px; border-radius:50%; background:{avatar_bg}; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; box-shadow:0 2px 8px rgba(0,0,0,0.15);">{esc(initial)}</div>
-                    <div>
-                      <h3 style="margin:0; font-size:17px; font-weight:600;">{esc(cname)}</h3>
-                      {f'<span style="font-size:11px; color:var(--muted); display:block; margin-top:2px;">{esc(aliases_str[:30])}</span>' if aliases_str else ''}
-                    </div>
-                  </div>
-                  <span class="badge" style="font-size:12px; font-weight:600; padding:5px 10px; border-radius:12px; {badge_style}">{esc(status_text)}</span>
-                </div>
-                <div style="font-size:13px; color:var(--muted); background:var(--background-color); border-radius:8px; padding:10px; margin-bottom:16px; display:flex; justify-content:space-between;">
-                  <div>You sent: <strong style="color:var(--text-color);">{money(total_sent)}</strong></div>
-                  <div>They sent: <strong style="color:var(--text-color);">{money(total_rec)}</strong></div>
-                </div>
-              </div>
-              <div style="display:flex; gap:10px;">
-                <button class="button subtle" onclick="openLedgerDrawer({cid}, '{esc(cname)}')" style="flex:1; padding:8px 12px; font-size:13px; border-radius:8px;">View Ledger</button>
-                <button class="button" onclick="openAddLedgerModal({cid}, '{esc(cname)}')" style="flex:1; padding:8px 12px; font-size:13px; border-radius:8px;">+ Entry</button>
-              </div>
-            </div>
-            """
-        )
-
-    grid_html = f'<div id="contacts-grid" class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:18px;">{"".join(cards_html) if cards_html else "<p class=\'empty\'>No contacts found.</p>"}</div>'
+    tools_html = f"""
+    <details class="people-tools">
+      <summary>More actions & tools</summary>
+      <div class="people-tools-grid">
+        <div class="people-tool-card">
+          <h3>Rolling money</h3>
+          <p class="empty people-hint">Someone sent you money to pass on. Neither person&apos;s net balance changes.</p>
+          <form method="post" action="/ledger/rolling" class="people-simple-form"
+                onsubmit="return confirm('Log rolling money? Balances stay the same.');">
+            <label>Received from
+              <select name="from_contact_id" required>{contact_opts}</select>
+            </label>
+            <label>Sent to
+              <select name="to_contact_id" required>{contact_opts}</select>
+            </label>
+            <label>Amount (₹)
+              <input type="number" name="amount" step="0.01" min="0.01" required placeholder="20000">
+            </label>
+            <label>Date
+              <input type="date" name="entry_date" value="{today}">
+            </label>
+            <label class="people-span">Note
+              <input type="text" name="notes" placeholder="Optional note">
+            </label>
+            <button type="submit" class="button">Save rolling</button>
+          </form>
+        </div>
+        <div class="people-tool-card">
+          <h3>Starting balance</h3>
+          <p class="empty people-hint">Money already owed before these bank statements.</p>
+          <form method="post" action="/ledger/opening" class="people-simple-form"
+                onsubmit="return confirm('Set starting balance?');">
+            <label>Person
+              <select name="contact_id" required>{contact_opts}</select>
+            </label>
+            <label>Who owes
+              <select name="direction">
+                <option value="they_owe_you" selected>They owe me</option>
+                <option value="you_owe_them">I owe them</option>
+              </select>
+            </label>
+            <label>Amount (₹)
+              <input type="number" name="amount" step="0.01" min="0.01" required placeholder="50000">
+            </label>
+            <label>Date
+              <input type="date" name="entry_date" value="{today}">
+            </label>
+            <label class="people-span">Note
+              <input type="text" name="notes" placeholder="Optional note">
+            </label>
+            <button type="submit" class="button">Save starting balance</button>
+          </form>
+        </div>
+      </div>
+    </details>
+    """
 
     add_contact_modal = """
-    <div id="modal-add-contact" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:1000;">
-      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:28px; border-radius:16px; width:100%; max-width:420px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-          <h3 style="margin:0; font-size:18px;">Add New Contact</h3>
-          <button class="button subtle" onclick="document.getElementById('modal-add-contact').style.display='none'" style="padding:4px 8px;">✕</button>
+    <div id="modal-add-contact" class="people-modal" hidden>
+      <div class="people-modal-card" role="dialog" aria-labelledby="add-contact-title">
+        <div class="people-modal-head">
+          <h3 id="add-contact-title">New person</h3>
+          <button type="button" class="button subtle people-modal-close" onclick="closePeopleModal('modal-add-contact')">✕</button>
         </div>
-        <form method="post" action="/contacts/create">
-          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Contact Name
-            <input name="name" required placeholder="e.g. Highnes" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
+        <form method="post" action="/contacts/create" class="people-simple-form people-modal-form">
+          <label class="people-span">Name
+            <input name="name" required placeholder="e.g. Highnes" autofocus>
           </label>
-          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">UPI Handles / Phone Aliases
-            <input name="aliases" placeholder="e.g. highnes.7@sibl, 8078866770" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
+          <label class="people-span">UPI / phone (optional)
+            <input name="aliases" placeholder="highnes@upi, 98xxxxxxxx">
           </label>
-          <label style="display:block; margin-bottom:20px; font-size:13px; font-weight:600;">Notes
-            <input name="notes" placeholder="Optional notes (e.g. roommate)" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
+          <label class="people-span">Note (optional)
+            <input name="notes" placeholder="Friend, roommate…">
           </label>
-          <div style="display:flex; justify-content:flex-end; gap:10px;">
-            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-contact').style.display='none'" style="padding:8px 16px;">Cancel</button>
-            <button type="submit" class="button" style="padding:8px 20px;">Create Contact</button>
+          <div class="people-modal-actions">
+            <button type="button" class="button subtle" onclick="closePeopleModal('modal-add-contact')">Cancel</button>
+            <button type="submit" class="button">Save person</button>
           </div>
         </form>
       </div>
@@ -578,51 +505,52 @@ def render_contacts_section(
     """
 
     add_entry_modal = """
-    <div id="modal-add-ledger" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:1000;">
-      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:28px; border-radius:16px; width:100%; max-width:460px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-          <h3 style="margin:0; font-size:18px;">Add Ledger Entry for <span id="ledger-modal-contact-name" style="color:var(--accent);"></span></h3>
-          <button class="button subtle" onclick="document.getElementById('modal-add-ledger').style.display='none'" style="padding:4px 8px;">✕</button>
+    <div id="modal-add-ledger" class="people-modal" hidden>
+      <div class="people-modal-card" role="dialog" aria-labelledby="add-entry-title">
+        <div class="people-modal-head">
+          <h3 id="add-entry-title">Add money with <span id="ledger-modal-contact-name"></span></h3>
+          <button type="button" class="button subtle people-modal-close" onclick="closePeopleModal('modal-add-ledger')">✕</button>
         </div>
-        <form method="post" action="/ledger/add">
+        <form method="post" action="/ledger/add" class="people-simple-form people-modal-form">
           <input type="hidden" id="ledger-modal-contact-id" name="contact_id">
-          
-          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Direction
-            <select name="direction" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
-              <option value="you_sent">You Sent (They owe you)</option>
-              <option value="they_sent">They Sent (You owe them)</option>
+
+          <fieldset class="people-choice">
+            <legend>What happened?</legend>
+            <label class="people-choice-opt">
+              <input type="radio" name="direction" value="you_sent" checked>
+              <span><strong>I paid them</strong><small>Loan, food, trip — they owe me</small></span>
+            </label>
+            <label class="people-choice-opt">
+              <input type="radio" name="direction" value="they_sent">
+              <span><strong>They paid me</strong><small>Repayment or money I received</small></span>
+            </label>
+          </fieldset>
+
+          <label class="people-span">Amount (₹)
+            <input type="number" step="0.01" min="0.01" name="amount" required placeholder="1500" class="people-amount-input">
+          </label>
+
+          <label class="people-span">Why
+            <select name="purpose">
+              <option value="loan" selected>Loan</option>
+              <option value="food_split">Food split</option>
+              <option value="trip">Trip</option>
+              <option value="opening_balance">Starting balance</option>
+              <option value="other">Other</option>
             </select>
           </label>
-          
-          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Amount (₹)
-            <input type="number" step="0.01" min="0.01" name="amount" required placeholder="0.00" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color); font-size:16px; font-weight:bold;">
+
+          <label class="people-span">Date
+            <input type="date" name="entry_date" id="ledger-modal-date">
           </label>
 
-          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Purpose
-            <select name="purpose" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
-              <option value="loan">Loan / Borrowed</option>
-              <option value="rolling">Rolling Money</option>
-              <option value="food_split">Food Split</option>
-              <option value="trip">Trip Expense</option>
-              <option value="other" selected>Other</option>
-            </select>
+          <label class="people-span">Note (optional)
+            <input name="notes" placeholder="Cash, GPay, lunch…">
           </label>
 
-          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Date
-            <input type="date" name="entry_date" id="ledger-modal-date" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
-          </label>
-
-          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Notes
-            <input name="notes" placeholder="Optional details (e.g. Cash, GPay, Food bill)" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
-          </label>
-
-          <label class="check" style="display:flex; align-items:center; gap:8px; margin-bottom:20px; font-size:13px; cursor:pointer;">
-            <input type="checkbox" name="is_opening_balance"> Pre-July Opening Balance
-          </label>
-
-          <div style="display:flex; justify-content:flex-end; gap:10px;">
-            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-ledger').style.display='none'" style="padding:8px 16px;">Cancel</button>
-            <button type="submit" class="button" style="padding:8px 20px;">Save Entry</button>
+          <div class="people-modal-actions">
+            <button type="button" class="button subtle" onclick="closePeopleModal('modal-add-ledger')">Cancel</button>
+            <button type="submit" class="button">Save</button>
           </div>
         </form>
       </div>
@@ -630,84 +558,70 @@ def render_contacts_section(
     """
 
     drawer_html = """
-    <div id="ledger-drawer-backdrop" onclick="closeLedgerDrawer()" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); backdrop-filter:blur(3px); z-index:1099;"></div>
-    <div id="ledger-drawer" style="display:none; position:fixed; top:0; right:0; width:100%; max-width:520px; height:100vh; background:var(--surface-color); border-left:1px solid var(--border-color); box-shadow:-8px 0 32px rgba(0,0,0,0.25); z-index:1100; flex-direction:column; padding:24px; overflow-y:auto; transition:transform 0.3s ease;">
-      <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-color); padding-bottom:16px; margin-bottom:16px;">
-        <h3 id="drawer-contact-name" style="margin:0; font-size:18px;">Ledger History</h3>
-        <button class="button subtle" onclick="closeLedgerDrawer()" style="padding:6px 12px; font-size:14px; border-radius:8px;">✕ Close</button>
-      </div>
-
-      <div id="drawer-balance-summary" style="background:var(--background-color); border:1px solid var(--border-color); border-radius:12px; padding:16px; margin-bottom:16px;">
-        <!-- Filled dynamically by JS -->
-      </div>
-
-      <div style="margin-bottom:12px; display:flex; gap:6px; flex-wrap:wrap;">
-        <button class="button filter-pill active" onclick="filterDrawerEntries('all', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">All</button>
-        <button class="button subtle filter-pill" onclick="filterDrawerEntries('you_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Given (+)</button>
-        <button class="button subtle filter-pill" onclick="filterDrawerEntries('they_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Received (-)</button>
-      </div>
-
-      <form method="post" action="/ledger/settle" id="drawer-settle-form" class="drawer-settle-form">
-        <input type="hidden" id="drawer-settle-contact-id" name="contact_id">
-        <div class="drawer-settle-row">
-          <label>Settle amount (₹)
-            <input type="number" name="amount" id="drawer-settle-amount" step="0.01" min="0.01" placeholder="Full balance if empty">
-          </label>
-          <div class="drawer-settle-actions">
-            <button type="button" class="button subtle" id="drawer-settle-full-btn" onclick="fillFullSettleAmount()">Use full</button>
-            <button type="submit" class="button" onclick="return confirmSettle()">Settle</button>
-          </div>
+    <div id="ledger-drawer-backdrop" class="people-drawer-backdrop" onclick="closeLedgerDrawer()" hidden></div>
+    <aside id="ledger-drawer" class="people-drawer" hidden aria-label="Person history">
+      <div class="people-drawer-head">
+        <div>
+          <h3 id="drawer-contact-name">History</h3>
+          <p id="drawer-balance-summary" class="people-drawer-summary"></p>
         </div>
-        <p class="empty" style="margin:6px 0 0; font-size:11px;">Leave amount blank to settle the full USB net. Partial settle posts a compensating entry.</p>
-      </form>
-
-      <div id="drawer-entries-list" style="margin-top:16px;">
-        <!-- Filled dynamically by JS -->
+        <button type="button" class="button subtle" onclick="closeLedgerDrawer()">Close</button>
       </div>
-    </div>
-    """
 
-    manual_merge_modal = f"""
-    <div id="modal-manual-merge" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:1000;">
-      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:28px; border-radius:16px; width:100%; max-width:460px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-          <h3 style="margin:0; font-size:18px;">Manual merge</h3>
-          <button class="button subtle" type="button" onclick="document.getElementById('modal-manual-merge').style.display='none'">✕</button>
-        </div>
-        <form method="post" action="/contacts/merge" onsubmit="return confirm('Merge selected contacts?');">
-          <label style="display:block; margin-bottom:12px; font-size:13px; font-weight:600;">Keep (winner)
-            <select name="winner_id" required style="width:100%; margin-top:6px; padding:10px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
-              {contact_opts}
-            </select>
-          </label>
-          <label style="display:block; margin-bottom:16px; font-size:13px; font-weight:600;">Merge away (loser IDs, comma-separated)
-            <input name="loser_ids" required placeholder="e.g. 12,15,18" style="width:100%; margin-top:6px; padding:10px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
-          </label>
-          <p class="empty" style="font-size:12px; margin:0 0 16px;">Tip: open a suggested merge card for one-click clusters, or use contact IDs from the cards.</p>
-          <div style="display:flex; justify-content:flex-end; gap:10px;">
-            <button type="button" class="button subtle" onclick="document.getElementById('modal-manual-merge').style.display='none'">Cancel</button>
-            <button type="submit" class="button">Merge</button>
-          </div>
+      <div class="people-drawer-actions">
+        <button type="button" class="button" id="drawer-add-money-btn">+ Money</button>
+        <form method="post" action="/ledger/settle" id="drawer-settle-form" class="people-settle">
+          <input type="hidden" id="drawer-settle-contact-id" name="contact_id">
+          <input type="number" name="amount" id="drawer-settle-amount" step="0.01" min="0.01" placeholder="Full amount" class="people-settle-input">
+          <button type="submit" class="button subtle" onclick="return confirmSettle()">Mark settled</button>
         </form>
       </div>
-    </div>
+
+      <div id="drawer-entries-list" class="people-history"></div>
+    </aside>
     """
 
     return f"""
-    <section>
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-        <h2>People (Khata)</h2>
+    <section class="people-page" aria-label="People balances">
+      <!-- 3 Top Metric Summary Cards -->
+      <div class="grid metrics people-metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:20px;">
+        <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net Owed to You</span>
+          <strong style="display:block; margin-top:4px; font-size:22px; color:var(--success);">{money(total_owes_you)}</strong>
+        </div>
+        <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net You Owe</span>
+          <strong style="display:block; margin-top:4px; font-size:22px; color:var(--error);">{money(total_you_owe)}</strong>
+        </div>
+        <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Active Contacts</span>
+          <strong style="display:block; margin-top:4px; font-size:22px; color:var(--text-color);">{len(contacts)}</strong>
+        </div>
       </div>
-      {summary_cards_html}
-      {people_settlement_html}
-      {workflow_html}
-      {merge_html}
-      {search_bar_html}
-      {banner_html}
-      {grid_html}
+
+      <!-- People Toolbar -->
+      <div class="people-toolbar">
+        <input id="contact-search-input" class="people-search" type="search" placeholder="Search name or handle…" oninput="filterPeopleList()" autocomplete="off">
+        <div class="people-filters" role="group" aria-label="Filter">
+          <button type="button" class="people-filter active" data-filter="active" onclick="filterPeopleStatus('active', this)">Balances</button>
+          <button type="button" class="people-filter" data-filter="owes_you" onclick="filterPeopleStatus('owes_you', this)">Owes me</button>
+          <button type="button" class="people-filter" data-filter="you_owe" onclick="filterPeopleStatus('you_owe', this)">I owe</button>
+          <button type="button" class="people-filter" data-filter="all" onclick="filterPeopleStatus('all', this)">Everyone</button>
+        </div>
+        <button type="button" class="button" onclick="openPeopleModal('modal-add-contact')">+ Person</button>
+      </div>
+
+      {pt_html}
+
+      <!-- Contact Cards Grid -->
+      <div id="contacts-grid" class="people-cards-grid">
+        {cards_html}
+      </div>
+
+      {tools_html}
+
       {add_contact_modal}
       {add_entry_modal}
-      {manual_merge_modal}
       {drawer_html}
     </section>
     """
@@ -1704,14 +1618,7 @@ def page(
         contact_options += f'<option value="{esc(c.get("name", ""))}">'
     partner_datalist = f'<datalist id="contact-partner-list">{contact_options}</datalist>'
 
-    # Merge suggestions for People tab
-    merge_suggestions: list[dict] = []
-    try:
-        from .settlement import suggest_merge_groups
-        # Need a live connection — suggestions precomputed in page only if provided via data
-        merge_suggestions = data.get("merge_suggestions") or []
-    except Exception:
-        merge_suggestions = []
+    merge_suggestions: list[dict] = data.get("merge_suggestions") or []
 
     # User header badge
     user_badge = ""
@@ -1724,7 +1631,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=15">
+  <link rel="stylesheet" href="/style.css?v=16">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1931,7 +1838,7 @@ def page(
   </div>
   
   {mobile_nav_html}
-  <script src="/app.js?v=14"></script>
+  <script src="/app.js?v=15"></script>
 </body>
 </html>
 """
