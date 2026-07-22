@@ -697,7 +697,11 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         db_path = self._db_path_for(username)
         if action == "confirm":
             with connect(db_path) as conn:
-                from .contacts import add_ledger_entry
+                from .contacts import add_ledger_entry, create_contact
+                if not from_contact_id:
+                    from_contact_id = create_contact(conn, "Unknown Sender")
+                if not to_contact_id:
+                    to_contact_id = create_contact(conn, "Unknown Recipient")
                 e1 = add_ledger_entry(
                     conn,
                     contact_id=from_contact_id,

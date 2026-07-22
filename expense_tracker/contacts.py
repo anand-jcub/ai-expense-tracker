@@ -272,17 +272,29 @@ def detect_passthrough_candidates(conn: sqlite3.Connection) -> list[dict[str, An
     candidates = []
     for r in rows:
         c_contact = find_contact_by_text(conn, r["credit_merchant"])
+        if not c_contact:
+            c_name = r["credit_merchant"] or "Unknown Sender"
+            cid = create_contact(conn, c_name)
+            c_contact = {"id": cid, "name": c_name}
+            
         d_contact = find_contact_by_text(conn, r["debit_merchant"])
+        if not d_contact:
+            d_name = r["debit_merchant"] or "Unknown Recipient"
+            did = create_contact(conn, d_name)
+            d_contact = {"id": did, "name": d_name}
+
         candidates.append({
             "credit_tx_id": r["credit_tx_id"],
             "credit_date": r["credit_date"],
             "credit_amount": float(Decimal(str(r["credit_amount"]))),
             "credit_merchant": r["credit_merchant"],
-            "credit_contact": c_contact["name"] if c_contact else None,
+            "credit_contact": c_contact["name"],
+            "from_contact_id": c_contact["id"],
             "debit_tx_id": r["debit_tx_id"],
             "debit_date": r["debit_date"],
             "debit_amount": float(Decimal(str(r["debit_amount"]))),
             "debit_merchant": r["debit_merchant"],
-            "debit_contact": d_contact["name"] if d_contact else None,
+            "debit_contact": d_contact["name"],
+            "to_contact_id": d_contact["id"],
         })
     return candidates

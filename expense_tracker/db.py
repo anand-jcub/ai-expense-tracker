@@ -153,6 +153,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     _safe_add_column(conn, "transactions", "uploaded_by", "TEXT")
     _safe_add_column(conn, "transactions", "source_txn_id", "INTEGER")
     _safe_add_column(conn, "classifications", "shared_with", "TEXT")
+    _safe_add_column(conn, "contacts", "aliases_json", "TEXT DEFAULT '[]'")
+    _safe_add_column(conn, "contacts", "notes", "TEXT")
     _safe_add_column(conn, "ledger_entries", "direction", "TEXT")
     _safe_add_column(conn, "ledger_entries", "entry_type", "TEXT")
     _safe_add_column(conn, "ledger_entries", "purpose", "TEXT")
