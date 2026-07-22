@@ -526,19 +526,72 @@
 
   window.closeLedgerDrawer = function () {
     var drawer = document.getElementById('ledger-drawer');
+    var backdrop = document.getElementById('ledger-drawer-backdrop');
     if (drawer) drawer.style.display = 'none';
+    if (backdrop) backdrop.style.display = 'none';
+  };
+
+  window.filterContactCards = function () {
+    var input = document.getElementById('contact-search-input');
+    if (!input) return;
+    var query = input.value.toLowerCase().trim();
+    var cards = document.querySelectorAll('#contacts-grid .contact-card');
+    cards.forEach(function (card) {
+      var name = card.getAttribute('data-name') || '';
+      var aliases = card.getAttribute('data-aliases') || '';
+      if (!query || name.includes(query) || aliases.includes(query)) {
+        card.style.display = 'flex';
+      } else {
+        card.style.display = 'none';
+      }
+    });
+  };
+
+  window.filterContactStatus = function (status, btn) {
+    var pills = document.querySelectorAll('.filter-pill[data-filter]');
+    pills.forEach(function (p) { p.classList.remove('active'); p.classList.add('subtle'); });
+    if (btn) { btn.classList.add('active'); btn.classList.remove('subtle'); }
+
+    var cards = document.querySelectorAll('#contacts-grid .contact-card');
+    cards.forEach(function (card) {
+      var cardStatus = card.getAttribute('data-status');
+      if (status === 'all' || cardStatus === status) {
+        card.style.display = 'flex';
+      } else {
+        card.style.display = 'none';
+      }
+    });
+  };
+
+  window.filterDrawerEntries = function (dir, btn) {
+    var parent = btn ? btn.parentElement : null;
+    if (parent) {
+      parent.querySelectorAll('.filter-pill').forEach(function (p) { p.classList.remove('active'); p.classList.add('subtle'); });
+      btn.classList.add('active'); btn.classList.remove('subtle');
+    }
+    var rows = document.querySelectorAll('#drawer-entries-list .ledger-row');
+    rows.forEach(function (row) {
+      var rowDir = row.getAttribute('data-direction');
+      if (dir === 'all' || rowDir === dir) {
+        row.style.display = 'block';
+      } else {
+        row.style.display = 'none';
+      }
+    });
   };
 
   window.openLedgerDrawer = function (contactId, contactName) {
     var drawer = document.getElementById('ledger-drawer');
+    var backdrop = document.getElementById('ledger-drawer-backdrop');
     if (!drawer) return;
+    if (backdrop) backdrop.style.display = 'block';
     drawer.style.display = 'flex';
-    document.getElementById('drawer-contact-name').innerText = contactName + ' - Ledger History';
+    document.getElementById('drawer-contact-name').innerText = contactName + ' — History';
     document.getElementById('drawer-settle-contact-id').value = contactId;
 
     var listEl = document.getElementById('drawer-entries-list');
     var summaryEl = document.getElementById('drawer-balance-summary');
-    listEl.innerHTML = '<p class="empty">Loading ledger entries...</p>';
+    listEl.innerHTML = '<p class="empty">Loading ledger history...</p>';
     summaryEl.innerHTML = '';
 
     fetch('/api/contacts/ledger?contact_id=' + contactId)
@@ -551,36 +604,45 @@
 
         var bal = data.balance || {};
         var net = bal.net_balance || 0;
-        var statusText = net > 0 ? ('Owes you Rs ' + net.toLocaleString('en-IN')) :
-          net < 0 ? ('You owe Rs ' + Math.abs(net).toLocaleString('en-IN')) : 'Settled (Rs 0)';
+        var statusColor = net > 0 ? 'var(--success)' : net < 0 ? 'var(--error)' : 'var(--muted)';
+        var statusText = net > 0 ? ('Owes you ₹' + net.toLocaleString('en-IN')) :
+          net < 0 ? ('You owe ₹' + Math.abs(net).toLocaleString('en-IN')) : 'Settled (₹0)';
 
         summaryEl.innerHTML =
-          '<div><strong>Net Status:</strong> <span style="font-weight:600;">' + statusText + '</span></div>' +
-          '<div style="font-size:12px; color:var(--muted); margin-top:4px;">Total Sent: Rs ' + (bal.total_you_sent || 0).toLocaleString('en-IN') +
-          ' | Total Received: Rs ' + (bal.total_they_sent || 0).toLocaleString('en-IN') + '</div>';
+          '<div style="display:flex; justify-content:space-between; align-items:center;">' +
+          '<div><span style="font-size:12px; color:var(--muted); text-transform:uppercase; font-weight:600;">Net Balance Position</span>' +
+          '<strong style="display:block; font-size:18px; color:' + statusColor + ';">' + statusText + '</strong></div>' +
+          '<div style="text-align:right; font-size:12px; color:var(--muted);">' +
+          '<div>Given: <strong style="color:var(--text-color);">₹' + (bal.total_you_sent || 0).toLocaleString('en-IN') + '</strong></div>' +
+          '<div>Received: <strong style="color:var(--text-color);">₹' + (bal.total_they_sent || 0).toLocaleString('en-IN') + '</strong></div>' +
+          '</div></div>';
 
         var entries = data.entries || [];
         if (!entries.length) {
-          listEl.innerHTML = '<p class="empty">No ledger entries yet.</p>';
+          listEl.innerHTML = '<p class="empty">No entries logged yet.</p>';
           return;
         }
 
-        var html = '<div style="display:flex; flex-direction:column; gap:10px;">';
+        var html = '<div style="display:flex; flex-direction:column; gap:12px;">';
         entries.forEach(function (e) {
-          var isYou = e.entry_type === 'you_sent';
+          var isYou = e.direction === 'you_sent' || e.entry_type === 'you_sent';
           var color = isYou ? 'var(--success)' : 'var(--error)';
+          var icon = isYou ? '↗' : '↘';
           var prefix = isYou ? '+ ' : '- ';
-          var passthroughBadge = e.is_passthrough ? '<span class="badge subtle" style="font-size:10px; margin-left:6px;">Pass-Through</span>' : '';
-          var openingBadge = e.is_opening_balance ? '<span class="badge warn" style="font-size:10px; margin-left:6px;">Opening Balance</span>' : '';
-          var noteText = e.notes ? ('<div style="font-size:12px; color:var(--muted); margin-top:2px;">' + e.notes + '</div>') : '';
-          var purposeText = e.purpose ? ('<span class="badge subtle" style="font-size:10px;">' + e.purpose + '</span>') : '';
+          var passthroughBadge = e.is_passthrough ? '<span class="badge subtle" style="font-size:10px; margin-left:6px;">⚡ Pass-Through</span>' : '';
+          var openingBadge = e.is_opening_balance ? '<span class="badge warn" style="font-size:10px; margin-left:6px;">Pre-July Opening</span>' : '';
+          var noteText = e.notes ? ('<div style="font-size:12px; color:var(--muted); margin-top:4px;">' + e.notes + '</div>') : '';
+          var purposeText = e.purpose ? ('<span class="badge subtle" style="font-size:10px; text-transform:capitalize;">' + e.purpose.replace('_', ' ') + '</span>') : '';
 
-          html += '<div style="background:var(--background-color); border:1px solid var(--border-color); border-radius:6px; padding:10px;">' +
+          html += '<div class="ledger-row" data-direction="' + (isYou ? 'you_sent' : 'they_sent') + '" style="background:var(--background-color); border:1px solid var(--border-color); border-radius:10px; padding:12px;">' +
             '<div style="display:flex; justify-content:space-between; align-items:center;">' +
-            '<span style="font-size:12px; color:var(--muted);">' + (e.entry_date || '') + '</span>' +
-            '<strong style="color:' + color + ';">' + prefix + 'Rs ' + (e.amount || 0).toLocaleString('en-IN') + '</strong>' +
+            '<div style="display:flex; align-items:center; gap:8px;">' +
+            '<span style="font-size:16px; font-weight:bold; color:' + color + ';">' + icon + '</span>' +
+            '<span style="font-size:13px; font-weight:500;">' + (e.entry_date || '') + '</span>' +
             '</div>' +
-            '<div style="margin-top:4px;">' + purposeText + passthroughBadge + openingBadge + '</div>' +
+            '<strong style="font-size:15px; color:' + color + ';">' + prefix + '₹' + (e.amount || 0).toLocaleString('en-IN') + '</strong>' +
+            '</div>' +
+            '<div style="margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; gap:4px;">' + purposeText + passthroughBadge + openingBadge + '</div>' +
             noteText +
             '</div>';
         });

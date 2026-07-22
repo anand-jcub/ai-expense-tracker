@@ -265,6 +265,52 @@ def render_money_flows_view(transactions: list[dict]) -> str:
 
 
 def render_contacts_section(contacts: list[dict], passthrough_candidates: list[dict]) -> str:
+    # Compute aggregate metrics
+    total_owes_you = Decimal("0")
+    total_you_owe = Decimal("0")
+    for item in contacts:
+        bal = item["balance"]
+        net = Decimal(str(bal["net_balance"]))
+        if net > 0:
+            total_owes_you += net
+        elif net < 0:
+            total_you_owe += abs(net)
+
+    # Khata Summary Cards
+    summary_cards_html = f"""
+    <div class="grid metrics" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:20px;">
+      <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; padding:16px;">
+        <span style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net Owed to You</span>
+        <strong style="display:block; margin-top:4px; font-size:22px; color:var(--success);">{money(total_owes_you)}</strong>
+      </div>
+      <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; padding:16px;">
+        <span style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net You Owe</span>
+        <strong style="display:block; margin-top:4px; font-size:22px; color:var(--error);">{money(total_you_owe)}</strong>
+      </div>
+      <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; padding:16px;">
+        <span style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Active Contacts</span>
+        <strong style="display:block; margin-top:4px; font-size:22px; color:var(--text-color);">{len(contacts)}</strong>
+      </div>
+    </div>
+    """
+
+    # Search & Filter Controls
+    search_bar_html = """
+    <div style="display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <div style="flex:1; min-width:240px; max-width:400px; position:relative;">
+        <input id="contact-search-input" onkeyup="filterContactCards()" placeholder="Search contact by name or handle..." style="width:100%; padding:10px 14px 10px 36px; border-radius:20px; border:1px solid var(--border-color); background:var(--surface-color); color:var(--text-color); font-size:14px;">
+        <svg viewBox="0 0 24 24" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); width:16px; height:16px; fill:var(--muted);"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="button filter-pill active" data-filter="all" onclick="filterContactStatus('all', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">All</button>
+        <button class="button subtle filter-pill" data-filter="owes_you" onclick="filterContactStatus('owes_you', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">Owes Me</button>
+        <button class="button subtle filter-pill" data-filter="you_owe" onclick="filterContactStatus('you_owe', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">I Owe</button>
+        <button class="button subtle filter-pill" data-filter="settled" onclick="filterContactStatus('settled', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">Settled</button>
+        <button class="button" onclick="document.getElementById('modal-add-contact').style.display='flex'" style="padding:6px 16px; font-size:13px; border-radius:20px;">+ New Contact</button>
+      </div>
+    </div>
+    """
+
     # Pass-through banner
     banner_html = ""
     if passthrough_candidates:
@@ -280,91 +326,105 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
             to_contact_id = cand.get("to_contact_id") or 0
             candidate_items.append(
                 f"""
-                <div class="passthrough-card" style="background:var(--surface-color); border:1px solid var(--accent); padding:12px; border-radius:8px; margin-bottom:12px;">
-                  <p style="margin:0 0 8px 0;"><strong>Possible Pass-Through Detected:</strong> Received {money(amt)} from <strong>{esc(from_name)}</strong> and forwarded to <strong>{esc(to_name)}</strong> on {esc(dt)}.</p>
-                  <form method="post" action="/ledger/passthrough/confirm" style="display:inline-flex; gap:8px;">
+                <div class="passthrough-card" style="background:rgba(59,130,246,0.08); border-left:4px solid var(--accent); padding:14px; border-radius:8px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                  <div>
+                    <strong style="color:var(--accent);">⚡ Pass-Through Candidate Detected:</strong> Received <strong>{money(amt)}</strong> from <strong>{esc(from_name)}</strong> &amp; forwarded to <strong>{esc(to_name)}</strong> on {esc(dt)}.
+                  </div>
+                  <form method="post" action="/ledger/passthrough/confirm" style="display:inline-flex; gap:8px; margin:0;">
                     <input type="hidden" name="credit_id" value="{credit_id}">
                     <input type="hidden" name="debit_id" value="{debit_id}">
                     <input type="hidden" name="from_contact_id" value="{from_contact_id}">
                     <input type="hidden" name="to_contact_id" value="{to_contact_id}">
                     <input type="hidden" name="amount" value="{amt}">
                     <input type="hidden" name="entry_date" value="{dt}">
-                    <button type="submit" name="action" value="confirm" class="button" style="padding:4px 12px; font-size:12px;">Yes, Link Pass-Through</button>
+                    <button type="submit" name="action" value="confirm" class="button" style="padding:4px 12px; font-size:12px;">Link Pass-Through</button>
                     <button type="submit" name="action" value="dismiss" class="button subtle" style="padding:4px 12px; font-size:12px;">Dismiss</button>
                   </form>
                 </div>
                 """
             )
-        banner_html = f'<div class="passthrough-candidates-banner">{"".join(candidate_items)}</div>'
+        banner_html = f'<div class="passthrough-candidates-banner" style="margin-bottom:20px;">{"".join(candidate_items)}</div>'
 
     # Contacts Cards Grid
     cards_html = []
-    for item in contacts:
+    colors = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ec4899", "#06b6d4"]
+    
+    for idx, item in enumerate(contacts):
         contact = item["contact"]
         bal = item["balance"]
         cid = contact["id"]
         cname = contact["name"]
+        aliases = contact.get("aliases", [])
+        aliases_str = ", ".join(aliases) if aliases else ""
         net = bal["net_balance"]
         total_sent = bal["total_you_sent"]
         total_rec = bal["total_they_sent"]
         
         if net > 0:
             status_text = f"Owes you {money(net)}"
-            badge_class = "ok"
+            status_code = "owes_you"
+            badge_style = "background:rgba(16,185,129,0.12); color:#10b981; border:1px solid rgba(16,185,129,0.3);"
         elif net < 0:
             status_text = f"You owe {money(abs(net))}"
-            badge_class = "warn"
+            status_code = "you_owe"
+            badge_style = "background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.3);"
         else:
             status_text = "Settled (₹0)"
-            badge_class = "subtle"
+            status_code = "settled"
+            badge_style = "background:var(--border-color); color:var(--muted);"
             
         initial = cname[0].upper() if cname else "?"
+        avatar_bg = colors[idx % len(colors)]
         
         cards_html.append(
             f"""
-            <div class="contact-card" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:10px; padding:16px; display:flex; flex-direction:column; justify-content:space-between;">
+            <div class="contact-card" data-name="{esc(cname.lower())}" data-aliases="{esc(aliases_str.lower())}" data-status="{status_code}" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.25s ease;" onmouseover="this.style.transform='translateY(-4px)';this.style.boxShadow='0 8px 24px rgba(0,0,0,0.12)';" onmouseout="this.style.transform='none';this.style.boxShadow='none';">
               <div>
-                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-                  <div style="display:flex; align-items:center; gap:10px;">
-                    <div style="width:36px; height:36px; border-radius:50%; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:16px;">{esc(initial)}</div>
+                <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:14px;">
+                  <div style="display:flex; align-items:center; gap:12px;">
+                    <div style="width:42px; height:42px; border-radius:50%; background:{avatar_bg}; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:18px; box-shadow:0 2px 8px rgba(0,0,0,0.15);">{esc(initial)}</div>
                     <div>
-                      <h3 style="margin:0; font-size:16px;">{esc(cname)}</h3>
+                      <h3 style="margin:0; font-size:17px; font-weight:600;">{esc(cname)}</h3>
+                      {f'<span style="font-size:11px; color:var(--muted); display:block; margin-top:2px;">{esc(aliases_str[:30])}</span>' if aliases_str else ''}
                     </div>
                   </div>
-                  <span class="badge {badge_class}" style="font-size:12px; padding:4px 8px;">{esc(status_text)}</span>
+                  <span class="badge" style="font-size:12px; font-weight:600; padding:5px 10px; border-radius:12px; {badge_style}">{esc(status_text)}</span>
                 </div>
-                <div style="font-size:13px; color:var(--muted); margin-bottom:16px;">
-                  <div>You sent: <strong>{money(total_sent)}</strong></div>
-                  <div>They sent: <strong>{money(total_rec)}</strong></div>
+                <div style="font-size:13px; color:var(--muted); background:var(--background-color); border-radius:8px; padding:10px; margin-bottom:16px; display:flex; justify-content:space-between;">
+                  <div>You sent: <strong style="color:var(--text-color);">{money(total_sent)}</strong></div>
+                  <div>They sent: <strong style="color:var(--text-color);">{money(total_rec)}</strong></div>
                 </div>
               </div>
-              <div style="display:flex; gap:8px;">
-                <button class="button subtle" onclick="openLedgerDrawer({cid}, '{esc(cname)}')" style="flex:1; padding:6px 12px; font-size:12px;">View Ledger</button>
-                <button class="button" onclick="openAddLedgerModal({cid}, '{esc(cname)}')" style="flex:1; padding:6px 12px; font-size:12px;">+ Entry</button>
+              <div style="display:flex; gap:10px;">
+                <button class="button subtle" onclick="openLedgerDrawer({cid}, '{esc(cname)}')" style="flex:1; padding:8px 12px; font-size:13px; border-radius:8px;">View Ledger</button>
+                <button class="button" onclick="openAddLedgerModal({cid}, '{esc(cname)}')" style="flex:1; padding:8px 12px; font-size:13px; border-radius:8px;">+ Entry</button>
               </div>
             </div>
             """
         )
 
-    grid_html = f'<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:16px; margin-top:16px;">{"".join(cards_html) if cards_html else "<p class=\'empty\'>No contacts yet.</p>"}</div>'
+    grid_html = f'<div id="contacts-grid" class="grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:18px;">{"".join(cards_html) if cards_html else "<p class=\'empty\'>No contacts found.</p>"}</div>'
 
     add_contact_modal = """
-    <div id="modal-add-contact" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
-      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:24px; border-radius:12px; width:100%; max-width:400px;">
-        <h3 style="margin-top:0;">Add New Contact</h3>
+    <div id="modal-add-contact" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:1000;">
+      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:28px; border-radius:16px; width:100%; max-width:420px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+          <h3 style="margin:0; font-size:18px;">Add New Contact</h3>
+          <button class="button subtle" onclick="document.getElementById('modal-add-contact').style.display='none'" style="padding:4px 8px;">✕</button>
+        </div>
         <form method="post" action="/contacts/create">
-          <label style="display:block; margin-bottom:12px;">Name
-            <input name="name" required placeholder="e.g. Highnes" style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Contact Name
+            <input name="name" required placeholder="e.g. Highnes" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
           </label>
-          <label style="display:block; margin-bottom:12px;">Aliases / UPI Handles (comma separated)
-            <input name="aliases" placeholder="e.g. highnes.7@sibl, 8078866770" style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">UPI Handles / Phone Aliases
+            <input name="aliases" placeholder="e.g. highnes.7@sibl, 8078866770" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
           </label>
-          <label style="display:block; margin-bottom:16px;">Notes
-            <input name="notes" placeholder="Optional notes" style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:20px; font-size:13px; font-weight:600;">Notes
+            <input name="notes" placeholder="Optional notes (e.g. roommate)" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
           </label>
-          <div style="display:flex; justify-content:flex-end; gap:8px;">
-            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-contact').style.display='none'">Cancel</button>
-            <button type="submit" class="button">Create Contact</button>
+          <div style="display:flex; justify-content:flex-end; gap:10px;">
+            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-contact').style.display='none'" style="padding:8px 16px;">Cancel</button>
+            <button type="submit" class="button" style="padding:8px 20px;">Create Contact</button>
           </div>
         </form>
       </div>
@@ -372,25 +432,28 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
     """
 
     add_entry_modal = """
-    <div id="modal-add-ledger" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
-      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:24px; border-radius:12px; width:100%; max-width:450px;">
-        <h3 style="margin-top:0;">Add Ledger Entry for <span id="ledger-modal-contact-name"></span></h3>
+    <div id="modal-add-ledger" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:1000;">
+      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:28px; border-radius:16px; width:100%; max-width:460px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+          <h3 style="margin:0; font-size:18px;">Add Ledger Entry for <span id="ledger-modal-contact-name" style="color:var(--accent);"></span></h3>
+          <button class="button subtle" onclick="document.getElementById('modal-add-ledger').style.display='none'" style="padding:4px 8px;">✕</button>
+        </div>
         <form method="post" action="/ledger/add">
           <input type="hidden" id="ledger-modal-contact-id" name="contact_id">
           
-          <label style="display:block; margin-bottom:12px;">Direction
-            <select name="direction" style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Direction
+            <select name="direction" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
               <option value="you_sent">You Sent (They owe you)</option>
               <option value="they_sent">They Sent (You owe them)</option>
             </select>
           </label>
           
-          <label style="display:block; margin-bottom:12px;">Amount (₹)
-            <input type="number" step="0.01" min="0.01" name="amount" required style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Amount (₹)
+            <input type="number" step="0.01" min="0.01" name="amount" required placeholder="0.00" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color); font-size:16px; font-weight:bold;">
           </label>
 
-          <label style="display:block; margin-bottom:12px;">Purpose
-            <select name="purpose" style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Purpose
+            <select name="purpose" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
               <option value="loan">Loan / Borrowed</option>
               <option value="rolling">Rolling Money</option>
               <option value="food_split">Food Split</option>
@@ -399,21 +462,21 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
             </select>
           </label>
 
-          <label style="display:block; margin-bottom:12px;">Date
-            <input type="date" name="entry_date" id="ledger-modal-date" style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Date
+            <input type="date" name="entry_date" id="ledger-modal-date" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
           </label>
 
-          <label style="display:block; margin-bottom:12px;">Notes
-            <input name="notes" placeholder="Optional details (e.g., cash payment)" style="width:100%; margin-top:4px;">
+          <label style="display:block; margin-bottom:14px; font-size:13px; font-weight:600;">Notes
+            <input name="notes" placeholder="Optional details (e.g. Cash, GPay, Food bill)" style="width:100%; margin-top:6px; padding:10px 12px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
           </label>
 
-          <label class="check" style="display:flex; align-items:center; gap:8px; margin-bottom:16px;">
+          <label class="check" style="display:flex; align-items:center; gap:8px; margin-bottom:20px; font-size:13px; cursor:pointer;">
             <input type="checkbox" name="is_opening_balance"> Pre-July Opening Balance
           </label>
 
-          <div style="display:flex; justify-content:flex-end; gap:8px;">
-            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-ledger').style.display='none'">Cancel</button>
-            <button type="submit" class="button">Save Entry</button>
+          <div style="display:flex; justify-content:flex-end; gap:10px;">
+            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-ledger').style.display='none'" style="padding:8px 16px;">Cancel</button>
+            <button type="submit" class="button" style="padding:8px 20px;">Save Entry</button>
           </div>
         </form>
       </div>
@@ -421,20 +484,26 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
     """
 
     drawer_html = """
-    <div id="ledger-drawer" style="display:none; position:fixed; top:0; right:0; width:100%; max-width:500px; height:100vh; background:var(--surface-color); border-left:1px solid var(--border-color); box-shadow:-4px 0 20px rgba(0,0,0,0.2); z-index:1100; flex-direction:column; padding:24px; overflow-y:auto;">
+    <div id="ledger-drawer-backdrop" onclick="closeLedgerDrawer()" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); backdrop-filter:blur(3px); z-index:1099;"></div>
+    <div id="ledger-drawer" style="display:none; position:fixed; top:0; right:0; width:100%; max-width:520px; height:100vh; background:var(--surface-color); border-left:1px solid var(--border-color); box-shadow:-8px 0 32px rgba(0,0,0,0.25); z-index:1100; flex-direction:column; padding:24px; overflow-y:auto; transition:transform 0.3s ease;">
       <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-color); padding-bottom:16px; margin-bottom:16px;">
-        <h3 id="drawer-contact-name" style="margin:0;">Ledger History</h3>
-        <button class="button subtle" onclick="closeLedgerDrawer()" style="padding:4px 8px;">✕ Close</button>
+        <h3 id="drawer-contact-name" style="margin:0; font-size:18px;">Ledger History</h3>
+        <button class="button subtle" onclick="closeLedgerDrawer()" style="padding:6px 12px; font-size:14px; border-radius:8px;">✕ Close</button>
       </div>
 
-      <div id="drawer-balance-summary" style="background:var(--background-color); border-radius:8px; padding:12px; margin-bottom:16px;">
+      <div id="drawer-balance-summary" style="background:var(--background-color); border:1px solid var(--border-color); border-radius:12px; padding:16px; margin-bottom:16px;">
         <!-- Filled dynamically by JS -->
       </div>
 
-      <div style="margin-bottom:16px; display:flex; justify-content:flex-end;">
+      <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
+        <div style="display:flex; gap:6px;">
+          <button class="button filter-pill active" onclick="filterDrawerEntries('all', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">All</button>
+          <button class="button subtle filter-pill" onclick="filterDrawerEntries('you_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Given (+)</button>
+          <button class="button subtle filter-pill" onclick="filterDrawerEntries('they_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Received (-)</button>
+        </div>
         <form method="post" action="/ledger/settle" style="margin:0;">
           <input type="hidden" id="drawer-settle-contact-id" name="contact_id">
-          <button type="submit" class="button subtle" onclick="return confirm('Mark full balance as settled?')" style="font-size:12px;">Mark as Settled (₹0)</button>
+          <button type="submit" class="button subtle" onclick="return confirm('Mark full balance as settled?')" style="font-size:12px; color:var(--muted);">Settle Balance (₹0)</button>
         </form>
       </div>
 
@@ -448,8 +517,9 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
     <section>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h2>Contact Ledger (Khata)</h2>
-        <button class="button" onclick="document.getElementById('modal-add-contact').style.display='flex'">+ Add Contact</button>
       </div>
+      {summary_cards_html}
+      {search_bar_html}
       {banner_html}
       {grid_html}
       {add_contact_modal}
@@ -1276,7 +1346,7 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=7"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>
 """
