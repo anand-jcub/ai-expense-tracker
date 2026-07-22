@@ -85,9 +85,9 @@ def register_page(message: str | None = None, error: str | None = None) -> bytes
 
 def money(value) -> str:
     try:
-        return f"Rs {Decimal(str(value or 0)):,.2f}"
+        return f"₹{Decimal(str(value or 0)):,.2f}"
     except InvalidOperation:
-        return "Rs 0.00"
+        return "₹0.00"
 
 
 def signed_amount(value) -> str:
@@ -98,8 +98,8 @@ def signed_amount(value) -> str:
     if amount > 0:
         return f'<span class="amount credit">+ {money(amount)}</span>'
     if amount < 0:
-        return f'<span class="amount debit">- {money(abs(amount))}</span>'
-    return '<span class="amount">Rs 0.00</span>'
+        return f'<span class="amount debit">− {money(abs(amount))}</span>'
+    return '<span class="amount">₹0.00</span>'
 
 
 def esc(value) -> str:
@@ -516,7 +516,7 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
     return f"""
     <section>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-        <h2>Contact Ledger (Khata)</h2>
+        <h2>People (Khata)</h2>
       </div>
       {summary_cards_html}
       {search_bar_html}
@@ -722,11 +722,11 @@ def render_review_rows(rows) -> str:
                     <option value="">Choose</option>
                     {option_tags(CATEGORIES, row['category'])}
                   </select></label>
-                  <label class="review-field"><span>Type</span><select name="expense_type_{row_id}">
+                  <label class="review-field"><span>Type</span><select name="expense_type_{row_id}" class="expense-type-select" data-row="{row_id}" onchange="toggleSharedFields(this)">
                     {option_tags(EXPENSE_TYPES, row['expense_type'])}
                   </select></label>
-                  <label class="review-field"><span>People</span><input name="split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
-                  <label class="review-field"><span>Shared with</span><input name="shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" title="Partner for shared expenses" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>People</span><input name="split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>Shared with</span><input name="shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" title="Partner for shared expenses" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
                   <label class="review-field"><span>Notes</span><input name="notes_{row_id}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="learn_{row_id}"> Learn</label>
                 </div>
@@ -761,11 +761,11 @@ def render_edit_rows(rows) -> str:
                     <option value="">Choose</option>
                     {option_tags(CATEGORIES, row['category'])}
                   </select></label>
-                  <label class="review-field"><span>Type</span><select name="edit_expense_type_{row_id}">
+                  <label class="review-field"><span>Type</span><select name="edit_expense_type_{row_id}" class="expense-type-select" data-row="edit_{row_id}" onchange="toggleSharedFields(this)">
                     {option_tags(EXPENSE_TYPES, row['expense_type'])}
                   </select></label>
-                  <label class="review-field"><span>People</span><input name="edit_split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
-                  <label class="review-field"><span>Shared with</span><input name="edit_shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>People</span><input name="edit_split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>Shared with</span><input name="edit_shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
                   <label class="review-field"><span>Notes</span><input name="edit_notes_{row_id}" value="{esc(row_get(row, 'notes', '') or '')}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="edit_learn_{row_id}"> Learn</label>
                 </div>
@@ -975,6 +975,88 @@ def render_rules(rows) -> str:
     )
 
 
+def render_home_attention_strip(
+    review_count: int,
+    passthrough_count: int,
+    open_shared_null_partner: int = 0,
+) -> str:
+    """P0: needs-attention strip on Home dashboard."""
+    chips = []
+    if review_count > 0:
+        chips.append(
+            f'<a class="home-chip warn" href="#review" data-tab-jump="review">'
+            f'<strong>{review_count}</strong> to review</a>'
+        )
+    if passthrough_count > 0:
+        chips.append(
+            f'<a class="home-chip accent" href="#contacts" data-tab-jump="contacts">'
+            f'<strong>{passthrough_count}</strong> pass-through candidate'
+            f'{"s" if passthrough_count != 1 else ""}</a>'
+        )
+    if open_shared_null_partner > 0:
+        chips.append(
+            f'<a class="home-chip muted" href="#transactions" data-tab-jump="transactions">'
+            f'<strong>{open_shared_null_partner}</strong> shared missing partner</a>'
+        )
+    if not chips:
+        chips.append(
+            '<span class="home-chip ok"><strong>✓</strong> Nothing needs attention</span>'
+        )
+    return f"""
+    <section class="home-strip home-attention" aria-label="Needs attention">
+      <div class="home-strip-header">
+        <h2>Needs attention</h2>
+      </div>
+      <div class="home-chip-row">{"".join(chips)}</div>
+    </section>
+    """
+
+
+def render_home_settlement_strip(partner_balances: list[dict], limit: int = 5) -> str:
+    """P0: top who-owes-whom nets on Home dashboard."""
+    ranked = sorted(
+        partner_balances or [],
+        key=lambda b: abs(float(b.get("net") or 0)),
+        reverse=True,
+    )
+    top = [b for b in ranked if float(b.get("net") or 0) != 0][:limit]
+
+    if not top:
+        body = (
+            '<p class="empty" style="margin:0;">No open person balances yet. '
+            'Use <a href="#contacts" data-tab-jump="contacts">People</a> for khata, '
+            'or tag <strong>Shared with</strong> on review.</p>'
+        )
+    else:
+        rows = []
+        for b in top:
+            name = str(b.get("username") or b.get("contact_name") or "?")
+            net = float(b.get("net") or 0)
+            if net > 0:
+                label = f"owes you {money(net)}"
+                cls = "credit"
+            else:
+                label = f"you owe {money(abs(net))}"
+                cls = "debit"
+            rows.append(
+                f'<li class="home-settle-row">'
+                f'<span class="home-settle-name">{esc(name)}</span>'
+                f'<span class="amount {cls}">{esc(label)}</span>'
+                f'</li>'
+            )
+        body = f'<ul class="home-settle-list">{"".join(rows)}</ul>'
+
+    return f"""
+    <section class="home-strip home-settlement" aria-label="Who owes whom">
+      <div class="home-strip-header">
+        <h2>Who owes whom</h2>
+        <a class="button subtle home-strip-link" href="#contacts" data-tab-jump="contacts">Open People →</a>
+      </div>
+      {body}
+    </section>
+    """
+
+
 def page(
     data: dict,
     message: str | None = None,
@@ -1013,7 +1095,32 @@ def page(
         return True
     debit_review = [r for r in debit_review if _in_period(r)]
     credit_review = [r for r in credit_review if _in_period(r)]
-    pending_badge_count = len(debit_review)
+    pending_badge_count = len(debit_review) + len(credit_review)
+    # Full queue size for Home attention (not period-filtered)
+    attention_review_count = len(data.get("pending") or [])
+    attention_pt_count = len(data.get("passthrough_candidates") or [])
+
+    def _row_field(row, key, default=None):
+        try:
+            if hasattr(row, "keys") and key in row.keys():
+                return row[key]
+        except Exception:
+            pass
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return default
+
+    open_shared_null = sum(
+        1
+        for r in data.get("transactions") or []
+        if (_row_field(r, "expense_type") or "") == "Shared"
+        and not (_row_field(r, "shared_with") or _row_field(r, "shared_with_contact_id"))
+        and float(_row_field(r, "debit") or 0) > 0
+    )
+    home_attention_html = render_home_attention_strip(
+        attention_review_count, attention_pt_count, open_shared_null
+    )
+    home_settlement_html = render_home_settlement_strip(partner_balances)
     editable_all = [row for row in data["transactions"] if row["status"] != "needs_review"]
     filtered_edit = filter_editable_rows(data["transactions"], edit_search)
     editable_rows = filtered_edit if edit_search else filtered_edit[:25]
@@ -1144,14 +1251,14 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=4">
+  <link rel="stylesheet" href="/style.css?v=9">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
   <header>
     <div class="header-title">
       <h1>Personal Expense Tracker</h1>
-      <p>SBI statement imports, merchant learning, review queue, and shared expense tracking.</p>
+      <p>Spend, review, and who-owes-whom — local SBI tracker</p>
     </div>
     <div class="header-right">
       {user_badge}
@@ -1175,7 +1282,7 @@ def page(
         </a>
         <a href="#contacts" class="tab-link" data-tab="contacts">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-          <span>Contact Ledger</span>
+          <span>People</span>
         </a>
         <a href="#review" class="tab-link" data-tab="review">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
@@ -1202,6 +1309,9 @@ def page(
 
       <!-- Tab 1: Dashboard -->
       <div id="pane-dashboard" class="tab-pane active">
+        {home_attention_html}
+        {home_settlement_html}
+
         {render_dashboard_filters(start_date, end_date, min_date, max_date, exclude_business, use_my_share)}
         
         <div class="grid metrics" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
@@ -1262,7 +1372,7 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 3: Contact Ledger -->
+      <!-- Tab 3: People (Khata) -->
       <div id="pane-contacts" class="tab-pane">
         {render_contacts_section(data.get('contacts', []), data.get('passthrough_candidates', []))}
       </div>
@@ -1363,7 +1473,7 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=8"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>
 """

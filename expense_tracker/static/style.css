@@ -727,6 +727,125 @@ td span {
 .credit-text { color: var(--success); }
 .debit-text { color: var(--error); }
 
+/* ── Home P0 strips (attention + settlement) ── */
+.home-strip {
+  margin-bottom: 20px;
+  padding: 18px 20px;
+}
+
+.home-strip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.home-strip-header h2 {
+  margin: 0;
+  font-family: 'Outfit', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.home-strip-link {
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.home-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.home-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+a.home-chip:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  color: var(--ink);
+}
+
+.home-chip strong {
+  font-family: 'Outfit', sans-serif;
+  font-size: 15px;
+}
+
+.home-chip.warn {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: var(--warn);
+}
+
+.home-chip.accent {
+  background: var(--accent-glow);
+  border-color: rgba(99, 102, 241, 0.35);
+  color: var(--accent);
+}
+
+.home-chip.muted {
+  color: var(--muted);
+}
+
+.home-chip.ok {
+  background: var(--success-glow);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: var(--success);
+}
+
+.home-settle-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.home-settle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.home-settle-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.home-settle-row .amount {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.home-settle-row .amount.credit { color: var(--success); }
+.home-settle-row .amount.debit { color: var(--error); }
+
+.shared-only-field {
+  transition: opacity 0.15s ease;
+}
+
 /* Responsive styles */
 @media (max-width: 1024px) {
   :root {

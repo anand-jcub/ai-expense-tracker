@@ -516,6 +516,41 @@
     }
   };
 
+  /* ── Progressive disclosure: Shared-with fields ── */
+  window.toggleSharedFields = function (selectEl) {
+    if (!selectEl) return;
+    var rowKey = selectEl.getAttribute('data-row');
+    var show = selectEl.value === 'Shared';
+    var fields = document.querySelectorAll('.shared-only-field[data-row="' + rowKey + '"]');
+    fields.forEach(function (el) {
+      el.style.display = show ? '' : 'none';
+    });
+  };
+
+  // Init shared-only visibility on load
+  document.querySelectorAll('select.expense-type-select').forEach(function (sel) {
+    window.toggleSharedFields(sel);
+  });
+
+  // Home strip links that jump tabs without full reload
+  document.querySelectorAll('[data-tab-jump]').forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      var tabId = el.getAttribute('data-tab-jump');
+      if (!tabId) return;
+      e.preventDefault();
+      if (typeof switchTab === 'function') {
+        // switchTab is local — use hash
+      }
+      if (history.pushState) {
+        history.pushState(null, null, '#' + tabId);
+      }
+      // Reuse same logic as nav
+      var tab = document.querySelector('.tab-link[data-tab="' + tabId + '"]');
+      if (tab) tab.click();
+      else window.location.hash = tabId;
+    });
+  });
+
   /* ── Contact Ledger Drawer & Modal JS ── */
   window.openAddLedgerModal = function (contactId, contactName) {
     document.getElementById('ledger-modal-contact-id').value = contactId;

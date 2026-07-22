@@ -165,14 +165,14 @@ class CoreTests(unittest.TestCase):
                 }
             ]
         )
-        self.assertIn("+ Rs 50,000.00", html)
+        self.assertIn("+ ₹50,000.00", html)
         self.assertIn('name="split_people_1"', html)
         self.assertIn("<span>People</span>", html)
         self.assertIn('value="1"', html)
         self.assertIn('name="learn_1"', html)
         self.assertNotIn('name="learn_1" checked', html)
         self.assertNotIn('type="submit"', html)
-        self.assertNotIn("Rs 0.00</td>", html)
+        self.assertNotIn("₹0.00</td>", html)
 
     def test_review_batch_has_single_confirm_button(self) -> None:
         html = render_review_rows(

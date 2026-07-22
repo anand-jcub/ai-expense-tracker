@@ -364,7 +364,7 @@ def _safe_add_column(conn: sqlite3.Connection, table: str, column: str, col_type
 
 
 def seed_default_contacts(conn: sqlite3.Connection) -> None:
-    from .contacts import create_contact
+    from .contacts import create_contact, find_contact_by_text
     defaults = [
         ("Highnes", ["highnes", "highnes.7@sibl", "8078866770", "highnesj sibl", "dr highnes sibl"]),
         ("Ranjima", ["ranjima", "9497760612"]),
@@ -374,7 +374,8 @@ def seed_default_contacts(conn: sqlite3.Connection) -> None:
     ]
     for name, aliases in defaults:
         try:
-            create_contact(conn, name, aliases)
+            if not find_contact_by_text(conn, name):
+                create_contact(conn, name, aliases)
         except Exception:
             pass
 
@@ -812,7 +813,8 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     rows = conn.execute(
         """
         select t.*, c.category, c.expense_type, c.split_ratio, c.my_share,
-               c.status, c.confidence, c.notes, c.rule_id,
+               c.status, c.confidence, c.notes, c.rule_id, c.shared_with,
+               c.shared_with_contact_id,
                coalesce((select sum(amount) from transaction_links where debit_id = t.id), 0) as debit_offset,
                coalesce((select sum(amount) from transaction_links where credit_id = t.id), 0) as credit_offset
         from transactions t
