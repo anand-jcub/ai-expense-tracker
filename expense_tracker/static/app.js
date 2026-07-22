@@ -516,20 +516,69 @@
     }
   };
 
-  /* ── Progressive disclosure: Shared-with fields ── */
-  window.toggleSharedFields = function (selectEl) {
+  /* ── Type-first chips + progressive fields ── */
+  window.selectExpenseType = function (chipBtn) {
+    if (!chipBtn) return;
+    var rowKey = chipBtn.getAttribute('data-row');
+    var type = chipBtn.getAttribute('data-type');
+    var selectEl = document.querySelector('select.expense-type-select[data-row="' + rowKey + '"]');
+    if (selectEl) {
+      selectEl.value = type;
+    }
+    var row = document.querySelector('.type-chip-row[data-row="' + rowKey + '"]');
+    if (row) {
+      row.querySelectorAll('.type-chip').forEach(function (c) {
+        c.classList.toggle('active', c.getAttribute('data-type') === type);
+      });
+    }
+    if (selectEl) window.toggleTypeFields(selectEl);
+    window.updateStickyBatchCounts();
+  };
+
+  window.toggleTypeFields = function (selectEl) {
     if (!selectEl) return;
     var rowKey = selectEl.getAttribute('data-row');
-    var show = selectEl.value === 'Shared';
-    var fields = document.querySelectorAll('.shared-only-field[data-row="' + rowKey + '"]');
-    fields.forEach(function (el) {
-      el.style.display = show ? '' : 'none';
+    var type = selectEl.value;
+    var showShared = type === 'Shared';
+    document.querySelectorAll('.shared-only-field[data-row="' + rowKey + '"]').forEach(function (el) {
+      el.style.display = showShared ? '' : 'none';
+    });
+    // Keep chip UI in sync if select changed programmatically
+    var row = document.querySelector('.type-chip-row[data-row="' + rowKey + '"]');
+    if (row) {
+      row.querySelectorAll('.type-chip').forEach(function (c) {
+        c.classList.toggle('active', c.getAttribute('data-type') === type);
+      });
+    }
+  };
+
+  // Back-compat alias
+  window.toggleSharedFields = window.toggleTypeFields;
+
+  window.updateStickyBatchCounts = function () {
+    document.querySelectorAll('form.review-batch-form').forEach(function (form) {
+      var bar = form.querySelector('[data-sticky-bar]');
+      if (!bar) return;
+      var countEl = bar.querySelector('.sticky-count');
+      var ready = 0;
+      form.querySelectorAll('select.category-select, select[name^="category_"], select[name^="edit_category_"]').forEach(function (sel) {
+        if (sel.value && sel.value.trim()) ready += 1;
+      });
+      if (countEl) countEl.textContent = String(ready);
+      bar.classList.toggle('has-ready', ready > 0);
     });
   };
 
-  // Init shared-only visibility on load
+  // Init type fields + sticky counts on load
   document.querySelectorAll('select.expense-type-select').forEach(function (sel) {
-    window.toggleSharedFields(sel);
+    window.toggleTypeFields(sel);
+  });
+  window.updateStickyBatchCounts();
+  document.addEventListener('change', function (e) {
+    if (e.target && (e.target.classList.contains('category-select') ||
+        (e.target.name && (e.target.name.indexOf('category_') === 0 || e.target.name.indexOf('edit_category_') === 0)))) {
+      window.updateStickyBatchCounts();
+    }
   });
 
   // Home strip links that jump tabs without full reload

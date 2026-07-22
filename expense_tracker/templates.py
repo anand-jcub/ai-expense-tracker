@@ -814,33 +814,61 @@ def bar_list(items, max_value=None) -> str:
     return "".join(rows)
 
 
+TYPE_CHIP_ORDER = ["Personal", "Shared", "Loan", "Transfer", "Business", "Other"]
+
+
+def _type_chips_html(row_key: str, selected: str | None, select_name: str) -> str:
+    selected = selected if selected in EXPENSE_TYPES else "Personal"
+    chips = []
+    for t in TYPE_CHIP_ORDER:
+        active = " active" if t == selected else ""
+        chips.append(
+            f'<button type="button" class="type-chip{active}" data-type="{esc(t)}" '
+            f'data-row="{esc(row_key)}" onclick="selectExpenseType(this)">{esc(t)}</button>'
+        )
+    return f"""
+    <div class="type-chip-row" data-row="{esc(row_key)}">
+      {''.join(chips)}
+    </div>
+    <select name="{esc(select_name)}" class="expense-type-select" data-row="{esc(row_key)}"
+            onchange="toggleTypeFields(this)" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;" tabindex="-1" aria-hidden="true">
+      {option_tags(EXPENSE_TYPES, selected)}
+    </select>
+    """
+
+
 def render_review_rows(rows) -> str:
     if not rows:
         return '<tr><td colspan="8" class="empty">Nothing waiting for review.</td></tr>'
     output = []
     for row in rows:
         row_id = row["id"]
+        et = row_get(row, "expense_type") or "Personal"
+        status = row_get(row, "status") or "needs_review"
+        shared_show = "display:none" if et != "Shared" else ""
         output.append(
             f"""
-            <tr>
+            <tr class="tx-row" data-status="{esc(status)}" data-expense-type="{esc(et)}" data-filter-bucket="needs_review">
               <td>{esc(row['txn_date'])}</td>
               <td>
                 <strong>{esc(row['merchant_display'])}</strong>
                 <span>{esc(row['description'])}</span>
+                <span class="badge warn" style="margin-top:4px; display:inline-block;">needs review</span>
               </td>
               <td>{signed_amount(row['amount_signed'])}</td>
               <td colspan="5">
-                <div class="review-form">
+                <div class="review-form" data-row="{row_id}">
                   <input type="hidden" name="review_ids" value="{row_id}">
-                  <label class="review-field"><span>Category</span><select name="category_{row_id}">
+                  <div class="review-field type-field-block">
+                    <span class="field-label">Type</span>
+                    {_type_chips_html(str(row_id), et, f"expense_type_{row_id}")}
+                  </div>
+                  <label class="review-field"><span>Category</span><select name="category_{row_id}" class="category-select" data-row="{row_id}" onchange="updateStickyBatchCounts()">
                     <option value="">Choose</option>
-                    {option_tags(CATEGORIES, row['category'])}
+                    {option_tags(CATEGORIES, row_get(row, 'category'))}
                   </select></label>
-                  <label class="review-field"><span>Type</span><select name="expense_type_{row_id}" class="expense-type-select" data-row="{row_id}" onchange="toggleSharedFields(this)">
-                    {option_tags(EXPENSE_TYPES, row['expense_type'])}
-                  </select></label>
-                  <label class="review-field shared-only-field" data-row="{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>People</span><input name="split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
-                  <label class="review-field shared-only-field" data-row="{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>Shared with</span><input name="shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" title="Partner for shared expenses" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>People</span><input name="split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>Shared with</span><input name="shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" title="Partner for shared expenses" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
                   <label class="review-field"><span>Notes</span><input name="notes_{row_id}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="learn_{row_id}"> Learn</label>
                 </div>
@@ -857,10 +885,15 @@ def render_edit_rows(rows) -> str:
     output = []
     for row in rows:
         row_id = row["id"]
+        et = row["expense_type"] or "Personal"
         badge = "ok" if row["status"] != "needs_review" else "warn"
+        shared_show = "display:none" if et != "Shared" else ""
+        bucket = "needs_review" if row["status"] == "needs_review" else (
+            "shared" if et == "Shared" else ("loan" if et == "Loan" else "classified")
+        )
         output.append(
             f"""
-            <tr>
+            <tr class="tx-row" data-status="{esc(row['status'])}" data-expense-type="{esc(et)}" data-filter-bucket="{bucket}">
               <td>{esc(row['txn_date'])}</td>
               <td>
                 <strong>{esc(row['merchant_display'])}</strong>
@@ -869,17 +902,18 @@ def render_edit_rows(rows) -> str:
               <td>{signed_amount(row['amount_signed'])}</td>
               <td><span class="badge {badge}">{esc(row['status'])}</span></td>
               <td colspan="5">
-                <div class="review-form">
+                <div class="review-form" data-row="edit_{row_id}">
                   <input type="hidden" name="edit_ids" value="{row_id}">
-                  <label class="review-field"><span>Category</span><select name="edit_category_{row_id}">
+                  <div class="review-field type-field-block">
+                    <span class="field-label">Type</span>
+                    {_type_chips_html(f"edit_{row_id}", et, f"edit_expense_type_{row_id}")}
+                  </div>
+                  <label class="review-field"><span>Category</span><select name="edit_category_{row_id}" class="category-select" data-row="edit_{row_id}" onchange="updateStickyBatchCounts()">
                     <option value="">Choose</option>
                     {option_tags(CATEGORIES, row['category'])}
                   </select></label>
-                  <label class="review-field"><span>Type</span><select name="edit_expense_type_{row_id}" class="expense-type-select" data-row="edit_{row_id}" onchange="toggleSharedFields(this)">
-                    {option_tags(EXPENSE_TYPES, row['expense_type'])}
-                  </select></label>
-                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>People</span><input name="edit_split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
-                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{'display:none' if (row['expense_type'] or '') != 'Shared' else ''}"><span>Shared with</span><input name="edit_shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>People</span><input name="edit_split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>Shared with</span><input name="edit_shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
                   <label class="review-field"><span>Notes</span><input name="edit_notes_{row_id}" value="{esc(row_get(row, 'notes', '') or '')}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="edit_learn_{row_id}"> Learn</label>
                 </div>
@@ -888,6 +922,160 @@ def render_edit_rows(rows) -> str:
             """
         )
     return "".join(output)
+
+
+def render_loan_suggestions(suggestions: list[dict]) -> str:
+    if not suggestions:
+        return ""
+    cards = []
+    for s in suggestions[:6]:
+        cards.append(
+            f"""
+            <div class="loan-suggest-card">
+              <div>
+                <strong>Post {money(s['amount'])} as loan to {esc(s['contact_name'])}?</strong>
+                <div class="loan-suggest-meta">{esc(s['txn_date'])} · {esc(s['merchant_display'])}
+                  · type {esc(s.get('expense_type') or '?')}</div>
+                <div class="loan-suggest-note">Suggest only — will create a khata entry (you sent). Does not change the bank row.</div>
+              </div>
+              <form method="post" action="/ledger/add" class="loan-suggest-form"
+                    onsubmit="return confirm('Post {money(s['amount'])} loan to {esc(s['contact_name'])}?');">
+                <input type="hidden" name="contact_id" value="{s['contact_id']}">
+                <input type="hidden" name="direction" value="you_sent">
+                <input type="hidden" name="amount" value="{s['amount']}">
+                <input type="hidden" name="purpose" value="loan">
+                <input type="hidden" name="entry_date" value="{esc(s['txn_date'])}">
+                <input type="hidden" name="transaction_id" value="{s['transaction_id']}">
+                <input type="hidden" name="notes" value="Suggested from {esc(s['merchant_display'])}">
+                <button type="submit" class="button">Post to khata</button>
+              </form>
+            </div>
+            """
+        )
+    return f"""
+    <section class="home-strip loan-suggestions" aria-label="Loan suggestions">
+      <div class="home-strip-header">
+        <h2>Suggested loans</h2>
+        <span class="home-chip muted" style="padding:4px 10px; font-size:11px;">never auto-posts</span>
+      </div>
+      <div class="loan-suggest-list">{"".join(cards)}</div>
+    </section>
+    """
+
+
+def render_unified_transactions_section(
+    pending_rows: list,
+    classified_rows: list,
+    loan_suggestions: list[dict] | None = None,
+    tx_filter: str = "needs_review",
+    review_sort: str = "newest",
+    review_search: str = "",
+    edit_search: str = "",
+) -> str:
+    """P2: single workspace with filters for review + edit."""
+    tx_filter = tx_filter if tx_filter in {
+        "needs_review", "classified", "shared", "loan", "all"
+    } else "needs_review"
+
+    pending_count = len(pending_rows)
+    classified_count = len(classified_rows)
+    shared_count = sum(1 for r in classified_rows if (r["expense_type"] or "") == "Shared")
+    loan_count = sum(1 for r in classified_rows if (r["expense_type"] or "") == "Loan")
+
+    def pill(fid: str, label: str, count: int) -> str:
+        active = " active" if tx_filter == fid else " subtle"
+        href = f"/?tx_filter={fid}"
+        if review_search:
+            href += f"&review_search={urllib.parse.quote(review_search)}"
+        if edit_search:
+            href += f"&edit_search={urllib.parse.quote(edit_search)}"
+        href += f"&review_sort={urllib.parse.quote(review_sort)}#review"
+        return (
+            f'<a class="button filter-pill{active}" href="{href}" '
+            f'style="padding:6px 14px; font-size:12px; border-radius:16px; text-decoration:none;">'
+            f'{esc(label)} <strong>{count}</strong></a>'
+        )
+
+    filters = f"""
+    <div class="tx-filter-bar">
+      {pill("needs_review", "Needs review", pending_count)}
+      {pill("classified", "Classified", classified_count)}
+      {pill("shared", "Shared", shared_count)}
+      {pill("loan", "Loans", loan_count)}
+      {pill("all", "All", pending_count + classified_count)}
+    </div>
+    """
+
+    loan_html = render_loan_suggestions(loan_suggestions or [])
+
+    # Body by filter
+    if tx_filter == "needs_review":
+        body = f"""
+        {review_sort_controls(review_sort, review_search)}
+        {review_search_controls(review_search, review_sort, pending_count, pending_count)}
+        <form method="post" action="/review" class="review-batch-form" id="unified-review-form">
+          <div style="overflow-x:auto;">
+            <table class="tx-table">
+              <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Classify</th></tr></thead>
+              <tbody>{render_review_rows(pending_rows) if pending_rows else '<tr><td colspan="8" class="empty">Nothing waiting for review.</td></tr>'}</tbody>
+            </table>
+          </div>
+          {review_batch_actions(pending_rows)}
+        </form>
+        """
+    elif tx_filter in {"classified", "shared", "loan"}:
+        if tx_filter == "shared":
+            rows = [r for r in classified_rows if (r["expense_type"] or "") == "Shared"]
+        elif tx_filter == "loan":
+            rows = [r for r in classified_rows if (r["expense_type"] or "") == "Loan"]
+        else:
+            rows = classified_rows
+        body = f"""
+        {edit_search_controls(edit_search, classified_count, len(rows), len(rows))}
+        <form method="post" action="/edit-classifications" class="review-batch-form" id="unified-edit-form">
+          <div style="overflow-x:auto;">
+            <table class="tx-table">
+              <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
+              <tbody>{render_edit_rows(rows) if rows else '<tr><td colspan="9" class="empty">No matching classified rows.</td></tr>'}</tbody>
+            </table>
+          </div>
+          {edit_batch_actions(rows)}
+        </form>
+        """
+    else:  # all — show pending then classified (two forms)
+        body = f"""
+        <h3 class="tx-subhead">Needs review</h3>
+        <form method="post" action="/review" class="review-batch-form">
+          <div style="overflow-x:auto;">
+            <table class="tx-table">
+              <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Classify</th></tr></thead>
+              <tbody>{render_review_rows(pending_rows) if pending_rows else '<tr><td colspan="8" class="empty">None pending.</td></tr>'}</tbody>
+            </table>
+          </div>
+          {review_batch_actions(pending_rows)}
+        </form>
+        <h3 class="tx-subhead" style="margin-top:24px;">Classified</h3>
+        <form method="post" action="/edit-classifications" class="review-batch-form">
+          <div style="overflow-x:auto;">
+            <table class="tx-table">
+              <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
+              <tbody>{render_edit_rows(classified_rows[:40]) if classified_rows else '<tr><td colspan="9" class="empty">None classified.</td></tr>'}</tbody>
+            </table>
+          </div>
+          {edit_batch_actions(classified_rows[:40])}
+        </form>
+        """
+
+    return f"""
+    <section class="unified-tx-section">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
+        <h2 style="margin:0;">Transactions</h2>
+      </div>
+      {filters}
+      {loan_html}
+      {body}
+    </section>
+    """
 
 
 def render_suggestions(suggestions: list[dict]) -> str:
@@ -1028,8 +1216,9 @@ def review_batch_actions(rows) -> str:
     if not rows:
         return ""
     return """
-    <div class="review-actions">
-      <button type="submit">Confirm review changes</button>
+    <div class="review-actions sticky-batch-bar" data-sticky-bar>
+      <span class="sticky-batch-meta"><span class="sticky-count">0</span> row(s) ready (category set)</span>
+      <button type="submit" class="button sticky-batch-btn">Confirm changes</button>
     </div>
     """
 
@@ -1038,8 +1227,9 @@ def edit_batch_actions(rows) -> str:
     if not rows:
         return ""
     return """
-    <div class="review-actions">
-      <button type="submit">Save classification edits</button>
+    <div class="review-actions sticky-batch-bar" data-sticky-bar>
+      <span class="sticky-batch-meta"><span class="sticky-count">0</span> row(s) with category</span>
+      <button type="submit" class="button sticky-batch-btn">Save classification edits</button>
     </div>
     """
 
@@ -1109,7 +1299,7 @@ def render_home_attention_strip(
         )
     if open_shared_null_partner > 0:
         chips.append(
-            f'<a class="home-chip muted" href="#transactions" data-tab-jump="transactions">'
+            f'<a class="home-chip muted" href="/?tx_filter=shared#review" data-tab-jump="review">'
             f'<strong>{open_shared_null_partner}</strong> shared missing partner</a>'
         )
     if not chips:
@@ -1186,6 +1376,7 @@ def page(
     current_user: str | None = None,
     all_users: list[str] | None = None,
     partner_balances: list[dict] | None = None,
+    tx_filter: str = "needs_review",
 ) -> bytes:
     """Assemble the full dashboard HTML page from pre-fetched data."""
     all_users = all_users or []
@@ -1194,9 +1385,12 @@ def page(
     review_search = review_search.strip()
     edit_search = edit_search.strip()
     person_search = person_search.strip()
+    tx_filter = tx_filter if tx_filter in {
+        "needs_review", "classified", "shared", "loan", "all"
+    } else "needs_review"
     filtered_review = filter_review_rows(data["pending"], review_search)
     pending_review = sort_review_rows(filtered_review, review_sort)
-    # Split review queue by debit/credit
+    # Split review queue by debit/credit (legacy split still used for badge counts)
     debit_review = [r for r in pending_review if r["debit"] and float(r["debit"] or 0) > 0]
     credit_review = [r for r in pending_review if r["credit"] and float(r["credit"] or 0) > 0]
     # Filter by selected date period
@@ -1209,7 +1403,9 @@ def page(
         return True
     debit_review = [r for r in debit_review if _in_period(r)]
     credit_review = [r for r in credit_review if _in_period(r)]
-    pending_badge_count = len(debit_review) + len(credit_review)
+    # Unified pending list (debits + credits) for Transactions workspace
+    unified_pending = [r for r in pending_review if _in_period(r)]
+    pending_badge_count = len(unified_pending)
     # Full queue size for Home attention (not period-filtered)
     attention_review_count = len(data.get("pending") or [])
     attention_pt_count = len(data.get("passthrough_candidates") or [])
@@ -1237,7 +1433,17 @@ def page(
     home_settlement_html = render_home_settlement_strip(partner_balances)
     editable_all = [row for row in data["transactions"] if row["status"] != "needs_review"]
     filtered_edit = filter_editable_rows(data["transactions"], edit_search)
-    editable_rows = filtered_edit if edit_search else filtered_edit[:25]
+    # Show more rows in unified workspace
+    editable_rows = filtered_edit if edit_search else filtered_edit[:50]
+    unified_tx_html = render_unified_transactions_section(
+        unified_pending,
+        editable_rows,
+        loan_suggestions=data.get("loan_suggestions") or [],
+        tx_filter=tx_filter,
+        review_sort=review_sort,
+        review_search=review_search,
+        edit_search=edit_search,
+    )
     person_matches = sorted(
         filter_transactions_by_text(data["transactions"], person_search),
         key=lambda row: (row["txn_date"], row["id"]),
@@ -1360,7 +1566,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=11">
+  <link rel="stylesheet" href="/style.css?v=12">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1387,7 +1593,7 @@ def page(
         </a>
         <a href="#review" class="tab-link" data-tab="review">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
-          <span>Review</span>
+          <span>Transactions</span>
           {f'<span class="tab-badge warn" id="review-count-badge">{pending_badge_count}</span>' if pending_badge_count > 0 else ''}
         </a>
         <a href="#contacts" class="tab-link" data-tab="contacts">
@@ -1404,8 +1610,8 @@ def page(
             <span>More</span>
           </summary>
           <div class="nav-more-items">
-            <a href="#transactions" class="tab-link" data-tab="transactions">
-              <span>Edit classifications</span>
+            <a href="/?tx_filter=classified#review" class="tab-link" data-tab="review" data-tab-jump="review">
+              <span>Classified (edit)</span>
             </a>
             <a href="#search" class="tab-link" data-tab="search">
               <span>Credit / debit search</span>
@@ -1496,55 +1702,24 @@ def page(
         )}
       </div>
 
-      <!-- Tab 4: Review Queue -->
+      <!-- Tab 4: Unified Transactions (review + edit) -->
       <div id="pane-review" class="tab-pane">
         {partner_datalist}
-        <section>
-          <h2>Transactions awaiting review</h2>
-          {review_sort_controls(review_sort, review_search)}
-          {review_search_controls(review_search, review_sort, len(data['pending']), len(filtered_review))}
-          <details open>
-            <summary><strong style="color:var(--debit-color,#e53e3e);">&#9654; Debits awaiting review</strong> <span class="tab-badge warn">{len(debit_review)}</span></summary>
-            <form method="post" action="/review" class="review-batch-form">
-              <div style="overflow-x: auto;">
-                <table>
-                  <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Confirmation</th></tr></thead>
-                  <tbody>{render_review_rows(debit_review) if debit_review else '<tr><td colspan="9" class="empty">No debits awaiting review in this period.</td></tr>'}</tbody>
-                </table>
-              </div>
-              {review_batch_actions(debit_review)}
-            </form>
-          </details>
-          <details style="margin-top:16px;">
-            <summary><strong style="color:var(--credit-color,#38a169);">&#9654; Credits awaiting review</strong> <span class="tab-badge ok">{len(credit_review)}</span></summary>
-            <form method="post" action="/review" class="review-batch-form">
-              <div style="overflow-x: auto;">
-                <table>
-                  <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Confirmation</th></tr></thead>
-                  <tbody>{render_review_rows(credit_review) if credit_review else '<tr><td colspan="9" class="empty">No credits awaiting review in this period.</td></tr>'}</tbody>
-                </table>
-              </div>
-              {review_batch_actions(credit_review)}
-            </form>
-          </details>
-        </section>
+        {unified_tx_html}
       </div>
 
-      <!-- Tab 5: Edit Classifications -->
+      <!-- Tab 5: legacy hash #transactions → same unified workspace -->
       <div id="pane-transactions" class="tab-pane">
-        <section>
-          <h2>Edit classifications</h2>
-          {edit_search_controls(edit_search, len(editable_all), len(filtered_edit), len(editable_rows))}
-          <form method="post" action="/edit-classifications" class="review-batch-form">
-            <div style="overflow-x: auto;">
-              <table>
-                <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
-                <tbody>{render_edit_rows(editable_rows)}</tbody>
-              </table>
-            </div>
-            {edit_batch_actions(editable_rows)}
-          </form>
-        </section>
+        {partner_datalist}
+        {render_unified_transactions_section(
+            unified_pending,
+            editable_rows,
+            loan_suggestions=data.get("loan_suggestions") or [],
+            tx_filter="classified" if tx_filter == "needs_review" else tx_filter,
+            review_sort=review_sort,
+            review_search=review_search,
+            edit_search=edit_search,
+        )}
       </div>
 
       <!-- Tab 6: Search -->
@@ -1592,7 +1767,7 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=11"></script>
+  <script src="/app.js?v=12"></script>
 </body>
 </html>
 """

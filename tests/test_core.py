@@ -200,7 +200,7 @@ class CoreTests(unittest.TestCase):
             ]
         ) + review_batch_actions([{"id": 1}, {"id": 2}])
         self.assertEqual(html.count('type="submit"'), 1)
-        self.assertIn("Confirm review changes", html)
+        self.assertIn("Confirm changes", html)
 
     def test_review_rows_can_be_sorted_by_date(self) -> None:
         rows = [

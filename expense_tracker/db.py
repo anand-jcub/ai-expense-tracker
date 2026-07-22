@@ -857,6 +857,12 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     except Exception:
         logger.exception("merge suggestions failed")
         merge_suggestions = []
+    try:
+        from .settlement import suggest_loan_posts
+        loan_suggestions = suggest_loan_posts(conn)
+    except Exception:
+        logger.exception("loan suggestions failed")
+        loan_suggestions = []
 
     return {
         "transactions": rows,
@@ -870,6 +876,7 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
         "contacts": contacts_with_balances,
         "passthrough_candidates": passthrough_candidates,
         "merge_suggestions": merge_suggestions,
+        "loan_suggestions": loan_suggestions,
     }
 
 

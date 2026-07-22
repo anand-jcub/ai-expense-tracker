@@ -619,6 +619,75 @@ def summary_all_contacts(conn: sqlite3.Connection) -> list[SettlementBalance]:
     return out
 
 
+def suggest_loan_posts(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, Any]]:
+    """Suggest posting bank debits as khata loans when merchant matches a contact.
+
+    Suggest-only: never writes ledger. UI posts via /ledger/add after user confirm.
+    """
+    # Txns already on ledger
+    posted = {
+        int(r[0])
+        for r in conn.execute(
+            "SELECT DISTINCT transaction_id FROM ledger_entries WHERE transaction_id IS NOT NULL"
+        ).fetchall()
+        if r[0] is not None
+    }
+    rows = conn.execute(
+        """
+        SELECT t.id, t.txn_date, t.debit, t.merchant_display, t.description,
+               c.expense_type, c.status, c.category
+        FROM transactions t
+        JOIN classifications c ON c.transaction_id = t.id
+        WHERE t.debit > 0
+        ORDER BY t.txn_date DESC, t.id DESC
+        LIMIT 80
+        """
+    ).fetchall()
+
+    out: list[dict[str, Any]] = []
+    seen_contacts: set[int] = set()
+    for r in rows:
+        tid = int(r["id"])
+        if tid in posted:
+            continue
+        et = (r["expense_type"] or "").strip()
+        # Prefer Loan type, or needs_review debits that match people
+        merchant = r["merchant_display"] or r["description"] or ""
+        match = resolve_contact(conn, merchant)
+        if not match:
+            continue
+        cid = int(match["canonical_id"])
+        # Avoid flooding with same contact
+        key = (cid, float(_d(r["debit"])))
+        if cid in seen_contacts and et != "Loan":
+            continue
+        if et not in {"Loan", "Transfer", "Personal", "Other"} and r["status"] != "needs_review":
+            continue
+        # Skip pure merchants that are hubs but look like businesses with high confidence auto
+        if et in {"Personal", "Business"} and r["status"] == "auto" and et != "Loan":
+            # only surface if name strongly matches (score high)
+            if float(match.get("score") or 0) < 85:
+                continue
+        if et == "Business" and float(match.get("score") or 0) < 95:
+            continue
+        seen_contacts.add(cid)
+        out.append({
+            "transaction_id": tid,
+            "txn_date": r["txn_date"],
+            "amount": float(_d(r["debit"])),
+            "merchant_display": r["merchant_display"],
+            "contact_id": cid,
+            "contact_name": match.get("name") or "Contact",
+            "expense_type": et,
+            "match_score": match.get("score"),
+            "direction": "you_sent",  # you paid them → they owe you
+            "purpose": "loan",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def suggest_merge_groups(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, Any]]:
     """Suggest contact clusters that look like the same person (for People merge UI).
 

@@ -223,6 +223,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                         current_user=username,
                         all_users=all_users,
                         partner_balances=partner_balances,
+                        tx_filter=params.get("tx_filter", ["needs_review"])[0],
                     )
                 )
             elif parsed.path == "/export.csv":
@@ -803,6 +804,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         notes = params.get("notes", [None])[0]
         entry_date = params.get("entry_date", [""])[0] or datetime.now().strftime("%Y-%m-%d")
         is_opening_balance = "is_opening_balance" in params
+        txn_raw = params.get("transaction_id", [""])[0].strip()
+        transaction_id = int(txn_raw) if txn_raw.isdigit() else None
+        # Loan suggestions return to review; manual entry returns to contacts
+        return_tab = "review" if transaction_id else "contacts"
         db_path = self._db_path_for(username)
         try:
             with connect(db_path) as conn:
@@ -810,7 +815,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 add_ledger_entry(
                     conn,
                     contact_id=contact_id,
-                    transaction_id=None,
+                    transaction_id=transaction_id,
                     direction=direction,
                     amount=amount,
                     purpose=purpose,
@@ -819,9 +824,14 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     is_opening_balance=is_opening_balance,
                     created_by="user",
                 )
-            self.redirect(message="Ledger entry added successfully.", tab="contacts")
+            msg = (
+                "Loan posted to khata (bank row unchanged)."
+                if purpose == "loan" and transaction_id
+                else "Ledger entry added successfully."
+            )
+            self.redirect(message=msg, tab=return_tab)
         except Exception as exc:
-            self.redirect(error=str(exc), tab="contacts")
+            self.redirect(error=str(exc), tab=return_tab)
 
     def handle_passthrough_confirm(self, username: str) -> None:
         length = int(self.headers.get("Content-Length", "0"))

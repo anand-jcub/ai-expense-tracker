@@ -1037,6 +1037,144 @@ a.home-chip:hover {
   flex-wrap: wrap;
 }
 
+/* ── P2: Type chips ── */
+.type-field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 100%;
+  flex: 1 1 100%;
+}
+
+.type-field-block .field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.type-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.type-chip {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.type-chip:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.type-chip.active {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── P2: Sticky batch bar ── */
+.sticky-batch-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(10px);
+}
+
+.sticky-batch-bar.has-ready {
+  border-color: rgba(99, 102, 241, 0.45);
+  box-shadow: 0 8px 28px rgba(99, 102, 241, 0.18);
+}
+
+.sticky-batch-meta {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.sticky-batch-meta .sticky-count {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+/* ── P2: Unified transactions filters ── */
+.tx-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tx-subhead {
+  font-family: 'Outfit', sans-serif;
+  font-size: 15px;
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+
+.tx-table .review-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+/* ── P2: Loan suggestions ── */
+.loan-suggest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.loan-suggest-card {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.loan-suggest-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.loan-suggest-note {
+  font-size: 11px;
+  color: var(--warn);
+  margin-top: 4px;
+}
+
+.loan-suggest-form { margin: 0; }
+
 /* Responsive styles */
 @media (max-width: 1024px) {
   :root {
