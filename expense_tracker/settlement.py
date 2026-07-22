@@ -793,13 +793,13 @@ def format_settlement_answer(bal: SettlementBalance) -> str:
     if net > 0:
         head = f"{name} owes you {money(net)}"
     elif net < 0:
-        head = f"You owe {name} {money(net)}"
+        head = f"You owe {name} {money(abs(net))}"
     else:
         head = f"{name} is settled (₹0)"
 
     parts = []
     if bal.ledger_net != 0:
-        parts.append(f"ledger {money(bal.ledger_net) if bal.ledger_net > 0 else '−' + money(bal.ledger_net)}")
+        parts.append(f"ledger {money(bal.ledger_net) if bal.ledger_net > 0 else '−' + money(abs(bal.ledger_net))}")
     if bal.virtual_shared_net != 0:
         parts.append(f"open shared {money(bal.virtual_shared_net)}")
     else:
