@@ -264,6 +264,201 @@ def render_money_flows_view(transactions: list[dict]) -> str:
     return f'<div class="timeline" style="margin-top:16px;">{"".join(items_html)}</div>'
 
 
+def render_contacts_section(contacts: list[dict], passthrough_candidates: list[dict]) -> str:
+    # Pass-through banner
+    banner_html = ""
+    if passthrough_candidates:
+        candidate_items = []
+        for cand in passthrough_candidates[:3]:
+            amt = cand.get("credit_amount") or cand.get("amount") or 0
+            from_name = cand.get("credit_contact") or cand.get("credit_merchant") or "Unknown"
+            to_name = cand.get("debit_contact") or cand.get("debit_merchant") or "Unknown"
+            dt = cand.get("credit_date") or cand.get("date") or ""
+            credit_id = cand.get("credit_tx_id") or cand.get("credit_id") or 0
+            debit_id = cand.get("debit_tx_id") or cand.get("debit_id") or 0
+            from_contact_id = cand.get("from_contact_id") or 0
+            to_contact_id = cand.get("to_contact_id") or 0
+            candidate_items.append(
+                f"""
+                <div class="passthrough-card" style="background:var(--surface-color); border:1px solid var(--accent); padding:12px; border-radius:8px; margin-bottom:12px;">
+                  <p style="margin:0 0 8px 0;"><strong>Possible Pass-Through Detected:</strong> Received {money(amt)} from <strong>{esc(from_name)}</strong> and forwarded to <strong>{esc(to_name)}</strong> on {esc(dt)}.</p>
+                  <form method="post" action="/ledger/passthrough/confirm" style="display:inline-flex; gap:8px;">
+                    <input type="hidden" name="credit_id" value="{credit_id}">
+                    <input type="hidden" name="debit_id" value="{debit_id}">
+                    <input type="hidden" name="from_contact_id" value="{from_contact_id}">
+                    <input type="hidden" name="to_contact_id" value="{to_contact_id}">
+                    <input type="hidden" name="amount" value="{amt}">
+                    <input type="hidden" name="entry_date" value="{dt}">
+                    <button type="submit" name="action" value="confirm" class="button" style="padding:4px 12px; font-size:12px;">Yes, Link Pass-Through</button>
+                    <button type="submit" name="action" value="dismiss" class="button subtle" style="padding:4px 12px; font-size:12px;">Dismiss</button>
+                  </form>
+                </div>
+                """
+            )
+        banner_html = f'<div class="passthrough-candidates-banner">{"".join(candidate_items)}</div>'
+
+    # Contacts Cards Grid
+    cards_html = []
+    for item in contacts:
+        contact = item["contact"]
+        bal = item["balance"]
+        cid = contact["id"]
+        cname = contact["name"]
+        net = bal["net_balance"]
+        total_sent = bal["total_you_sent"]
+        total_rec = bal["total_they_sent"]
+        
+        if net > 0:
+            status_text = f"Owes you {money(net)}"
+            badge_class = "ok"
+        elif net < 0:
+            status_text = f"You owe {money(abs(net))}"
+            badge_class = "warn"
+        else:
+            status_text = "Settled (₹0)"
+            badge_class = "subtle"
+            
+        initial = cname[0].upper() if cname else "?"
+        
+        cards_html.append(
+            f"""
+            <div class="contact-card" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:10px; padding:16px; display:flex; flex-direction:column; justify-content:space-between;">
+              <div>
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:36px; height:36px; border-radius:50%; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:16px;">{esc(initial)}</div>
+                    <div>
+                      <h3 style="margin:0; font-size:16px;">{esc(cname)}</h3>
+                    </div>
+                  </div>
+                  <span class="badge {badge_class}" style="font-size:12px; padding:4px 8px;">{esc(status_text)}</span>
+                </div>
+                <div style="font-size:13px; color:var(--muted); margin-bottom:16px;">
+                  <div>You sent: <strong>{money(total_sent)}</strong></div>
+                  <div>They sent: <strong>{money(total_rec)}</strong></div>
+                </div>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button class="button subtle" onclick="openLedgerDrawer({cid}, '{esc(cname)}')" style="flex:1; padding:6px 12px; font-size:12px;">View Ledger</button>
+                <button class="button" onclick="openAddLedgerModal({cid}, '{esc(cname)}')" style="flex:1; padding:6px 12px; font-size:12px;">+ Entry</button>
+              </div>
+            </div>
+            """
+        )
+
+    grid_html = f'<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:16px; margin-top:16px;">{"".join(cards_html) if cards_html else "<p class=\'empty\'>No contacts yet.</p>"}</div>'
+
+    add_contact_modal = """
+    <div id="modal-add-contact" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:24px; border-radius:12px; width:100%; max-width:400px;">
+        <h3 style="margin-top:0;">Add New Contact</h3>
+        <form method="post" action="/contacts/create">
+          <label style="display:block; margin-bottom:12px;">Name
+            <input name="name" required placeholder="e.g. Highnes" style="width:100%; margin-top:4px;">
+          </label>
+          <label style="display:block; margin-bottom:12px;">Aliases / UPI Handles (comma separated)
+            <input name="aliases" placeholder="e.g. highnes.7@sibl, 8078866770" style="width:100%; margin-top:4px;">
+          </label>
+          <label style="display:block; margin-bottom:16px;">Notes
+            <input name="notes" placeholder="Optional notes" style="width:100%; margin-top:4px;">
+          </label>
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-contact').style.display='none'">Cancel</button>
+            <button type="submit" class="button">Create Contact</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    """
+
+    add_entry_modal = """
+    <div id="modal-add-ledger" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:24px; border-radius:12px; width:100%; max-width:450px;">
+        <h3 style="margin-top:0;">Add Ledger Entry for <span id="ledger-modal-contact-name"></span></h3>
+        <form method="post" action="/ledger/add">
+          <input type="hidden" id="ledger-modal-contact-id" name="contact_id">
+          
+          <label style="display:block; margin-bottom:12px;">Direction
+            <select name="direction" style="width:100%; margin-top:4px;">
+              <option value="you_sent">You Sent (They owe you)</option>
+              <option value="they_sent">They Sent (You owe them)</option>
+            </select>
+          </label>
+          
+          <label style="display:block; margin-bottom:12px;">Amount (₹)
+            <input type="number" step="0.01" min="0.01" name="amount" required style="width:100%; margin-top:4px;">
+          </label>
+
+          <label style="display:block; margin-bottom:12px;">Purpose
+            <select name="purpose" style="width:100%; margin-top:4px;">
+              <option value="loan">Loan / Borrowed</option>
+              <option value="rolling">Rolling Money</option>
+              <option value="food_split">Food Split</option>
+              <option value="trip">Trip Expense</option>
+              <option value="other" selected>Other</option>
+            </select>
+          </label>
+
+          <label style="display:block; margin-bottom:12px;">Date
+            <input type="date" name="entry_date" id="ledger-modal-date" style="width:100%; margin-top:4px;">
+          </label>
+
+          <label style="display:block; margin-bottom:12px;">Notes
+            <input name="notes" placeholder="Optional details (e.g., cash payment)" style="width:100%; margin-top:4px;">
+          </label>
+
+          <label class="check" style="display:flex; align-items:center; gap:8px; margin-bottom:16px;">
+            <input type="checkbox" name="is_opening_balance"> Pre-July Opening Balance
+          </label>
+
+          <div style="display:flex; justify-content:flex-end; gap:8px;">
+            <button type="button" class="button subtle" onclick="document.getElementById('modal-add-ledger').style.display='none'">Cancel</button>
+            <button type="submit" class="button">Save Entry</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    """
+
+    drawer_html = """
+    <div id="ledger-drawer" style="display:none; position:fixed; top:0; right:0; width:100%; max-width:500px; height:100vh; background:var(--surface-color); border-left:1px solid var(--border-color); box-shadow:-4px 0 20px rgba(0,0,0,0.2); z-index:1100; flex-direction:column; padding:24px; overflow-y:auto;">
+      <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-color); padding-bottom:16px; margin-bottom:16px;">
+        <h3 id="drawer-contact-name" style="margin:0;">Ledger History</h3>
+        <button class="button subtle" onclick="closeLedgerDrawer()" style="padding:4px 8px;">✕ Close</button>
+      </div>
+
+      <div id="drawer-balance-summary" style="background:var(--background-color); border-radius:8px; padding:12px; margin-bottom:16px;">
+        <!-- Filled dynamically by JS -->
+      </div>
+
+      <div style="margin-bottom:16px; display:flex; justify-content:flex-end;">
+        <form method="post" action="/ledger/settle" style="margin:0;">
+          <input type="hidden" id="drawer-settle-contact-id" name="contact_id">
+          <button type="submit" class="button subtle" onclick="return confirm('Mark full balance as settled?')" style="font-size:12px;">Mark as Settled (₹0)</button>
+        </form>
+      </div>
+
+      <div id="drawer-entries-list">
+        <!-- Filled dynamically by JS -->
+      </div>
+    </div>
+    """
+
+    return f"""
+    <section>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2>Contact Ledger (Khata)</h2>
+        <button class="button" onclick="document.getElementById('modal-add-contact').style.display='flex'">+ Add Contact</button>
+      </div>
+      {banner_html}
+      {grid_html}
+      {add_contact_modal}
+      {add_entry_modal}
+      {drawer_html}
+    </section>
+    """
+
+
 def collapsible_section(section_id: str, title: str, body: str, meta: str = "", open_section: bool = False) -> str:
     open_attr = " open" if open_section else ""
     meta_html = f'<span class="summary-meta">{esc(meta)}</span>' if meta else ""
@@ -892,6 +1087,10 @@ def page(
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           <span>Import / Add</span>
         </a>
+        <a href="#contacts" class="tab-link" data-tab="contacts">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+          <span>Contact Ledger</span>
+        </a>
         <a href="#review" class="tab-link" data-tab="review">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
           <span>Review Queue</span>
@@ -975,6 +1174,11 @@ def page(
           <h2>Money Flow</h2>
           {render_money_flows_view(data['transactions'])}
         </section>
+      </div>
+
+      <!-- Tab 3: Contact Ledger -->
+      <div id="pane-contacts" class="tab-pane">
+        {render_contacts_section(data.get('contacts', []), data.get('passthrough_candidates', []))}
       </div>
 
       <!-- Tab 4: Review Queue -->
@@ -1072,7 +1276,7 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=6"></script>
+  <script src="/app.js?v=7"></script>
 </body>
 </html>
 """

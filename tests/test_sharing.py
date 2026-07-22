@@ -28,7 +28,7 @@ class SharingTests(unittest.TestCase):
         self.patcher4.start()
         
         # Reset request context database path
-        if hasattr(db.request_context, "db_path"):
+        if hasattr(db, "request_context") and hasattr(db.request_context, "db_path"):
             del db.request_context.db_path
 
     def tearDown(self) -> None:
@@ -37,7 +37,7 @@ class SharingTests(unittest.TestCase):
         self.patcher3.stop()
         self.patcher4.stop()
         
-        if hasattr(db.request_context, "db_path"):
+        if hasattr(db, "request_context") and hasattr(db.request_context, "db_path"):
             del db.request_context.db_path
             
         self.test_dir.cleanup()

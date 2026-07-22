@@ -97,12 +97,22 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.wfile.flush()
 
-    def redirect(self, message: str | None = None, error: str | None = None, path: str = "/") -> None:
+    def redirect(self, message: str | None = None, error: str | None = None, path: str = "/", tab: str | None = None) -> None:
         query = urllib.parse.urlencode({k: v for k, v in {"message": message, "error": error}.items() if v})
-        target = f"{path}?{query}" if query else path
+        hash_suffix = f"#{tab}" if tab else ""
+        target = f"{path}?{query}{hash_suffix}" if query else f"{path}{hash_suffix}"
         self.send_response(303)
         self.send_header("Location", target)
         self.end_headers()
+        self.wfile.flush()
+
+    def respond_json(self, payload: Any, status: int = 200) -> None:
+        body = json.dumps(payload, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
         self.wfile.flush()
 
     def serve_static(self, filename: str, content_type: str) -> None:
@@ -123,10 +133,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         content_type = self.headers.get("Content-Type", "")
         body = self.rfile.read(length)
-        message = BytesParser(policy=default).parsebytes(
-            f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
-        )
-        return {part.get_param("name", header="content-disposition"): part for part in message.iter_parts()}
+        return parse_multipart(body, content_type)
 
     def log_message(self, format: str, *args) -> None:
         logger.debug("%s %s", self.command, self.path)
@@ -161,6 +168,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             username = self.get_session_username()
             if not username:
                 self.redirect(path="/login")
+                return
+
+            if parsed.path == "/api/contacts/ledger":
+                self.handle_api_contact_ledger(username, params)
                 return
 
             if parsed.path == "/":
@@ -233,6 +244,14 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 self.handle_disconnect(username)
             elif self.path == "/delete-rule":
                 self.handle_delete_rule(username)
+            elif self.path == "/contacts/create":
+                self.handle_contact_create(username)
+            elif self.path == "/ledger/add":
+                self.handle_ledger_add(username)
+            elif self.path == "/ledger/passthrough/confirm":
+                self.handle_passthrough_confirm(username)
+            elif self.path == "/ledger/settle":
+                self.handle_ledger_settle(username)
             else:
                 self.send_error(404)
         except Exception:
@@ -603,6 +622,133 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             logger.exception("Unexpected error deleting rule.")
             self.redirect(error=str(exc))
+
+    def handle_api_contact_ledger(self, username: str, params: dict) -> None:
+        contact_id_str = params.get("contact_id", [""])[0]
+        if not contact_id_str.isdigit():
+            self.respond_json({"error": "Invalid contact_id"}, status=400)
+            return
+        contact_id = int(contact_id_str)
+        db_path = self._db_path_for(username)
+        with connect(db_path) as conn:
+            from .contacts import get_contact_ledger, calculate_contact_balance
+            entries = get_contact_ledger(conn, contact_id)
+            balance = calculate_contact_balance(conn, contact_id)
+        self.respond_json({"entries": entries, "balance": balance})
+
+    def handle_contact_create(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        name = params.get("name", [""])[0]
+        aliases = params.get("aliases", [""])[0]
+        notes = params.get("notes", [None])[0]
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                from .contacts import create_contact
+                create_contact(conn, name, aliases, notes)
+            self.redirect(message=f"Contact '{name}' created.", tab="contacts")
+        except Exception as exc:
+            self.redirect(error=str(exc), tab="contacts")
+
+    def handle_ledger_add(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        contact_id = int(params.get("contact_id", [0])[0])
+        direction = params.get("direction", ["you_sent"])[0]
+        amount = Decimal(params.get("amount", ["0"])[0])
+        purpose = params.get("purpose", ["other"])[0]
+        notes = params.get("notes", [None])[0]
+        entry_date = params.get("entry_date", [""])[0] or datetime.now().strftime("%Y-%m-%d")
+        is_opening_balance = "is_opening_balance" in params
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                from .contacts import add_ledger_entry
+                add_ledger_entry(
+                    conn,
+                    contact_id=contact_id,
+                    transaction_id=None,
+                    direction=direction,
+                    amount=amount,
+                    purpose=purpose,
+                    notes=notes,
+                    entry_date=entry_date,
+                    is_opening_balance=is_opening_balance,
+                    created_by="user",
+                )
+            self.redirect(message="Ledger entry added successfully.", tab="contacts")
+        except Exception as exc:
+            self.redirect(error=str(exc), tab="contacts")
+
+    def handle_passthrough_confirm(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        action = params.get("action", ["confirm"])[0]
+        credit_id = int(params.get("credit_id", [0])[0])
+        debit_id = int(params.get("debit_id", [0])[0])
+        from_contact_id = int(params.get("from_contact_id", [0])[0])
+        to_contact_id = int(params.get("to_contact_id", [0])[0])
+        amount = Decimal(params.get("amount", ["0"])[0])
+        entry_date = params.get("entry_date", [""])[0]
+        db_path = self._db_path_for(username)
+        if action == "confirm":
+            with connect(db_path) as conn:
+                from .contacts import add_ledger_entry
+                e1 = add_ledger_entry(
+                    conn,
+                    contact_id=from_contact_id,
+                    transaction_id=credit_id,
+                    direction="they_sent",
+                    amount=amount,
+                    purpose="rolling",
+                    is_passthrough=True,
+                    entry_date=entry_date,
+                    created_by="user",
+                )
+                e2 = add_ledger_entry(
+                    conn,
+                    contact_id=to_contact_id,
+                    transaction_id=debit_id,
+                    direction="you_sent",
+                    amount=amount,
+                    purpose="rolling",
+                    is_passthrough=True,
+                    passthrough_pair_id=e1,
+                    entry_date=entry_date,
+                    created_by="user",
+                )
+            self.redirect(message="Pass-through transaction confirmed.", tab="contacts")
+        else:
+            self.redirect(message="Pass-through suggestion dismissed.", tab="contacts")
+
+    def handle_ledger_settle(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        contact_id = int(params.get("contact_id", [0])[0])
+        db_path = self._db_path_for(username)
+        with connect(db_path) as conn:
+            from .contacts import calculate_contact_balance, add_ledger_entry
+            bal = calculate_contact_balance(conn, contact_id)
+            net = bal["net_balance"]
+            if net != 0:
+                direction = "they_sent" if net > 0 else "you_sent"
+                add_ledger_entry(
+                    conn,
+                    contact_id=contact_id,
+                    transaction_id=None,
+                    direction=direction,
+                    amount=abs(net),
+                    purpose="settlement",
+                    notes="Settled balance",
+                    entry_date=datetime.now().strftime("%Y-%m-%d"),
+                    created_by="user",
+                )
+        self.redirect(message="Balance marked as settled.", tab="contacts")
 
 
 def run(host: str = "127.0.0.1", port: int = 8765) -> None:

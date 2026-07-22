@@ -515,4 +515,81 @@
       renderCharts();
     }
   };
+
+  /* ── Contact Ledger Drawer & Modal JS ── */
+  window.openAddLedgerModal = function (contactId, contactName) {
+    document.getElementById('ledger-modal-contact-id').value = contactId;
+    document.getElementById('ledger-modal-contact-name').innerText = contactName;
+    document.getElementById('ledger-modal-date').value = new Date().toISOString().split('T')[0];
+    document.getElementById('modal-add-ledger').style.display = 'flex';
+  };
+
+  window.closeLedgerDrawer = function () {
+    var drawer = document.getElementById('ledger-drawer');
+    if (drawer) drawer.style.display = 'none';
+  };
+
+  window.openLedgerDrawer = function (contactId, contactName) {
+    var drawer = document.getElementById('ledger-drawer');
+    if (!drawer) return;
+    drawer.style.display = 'flex';
+    document.getElementById('drawer-contact-name').innerText = contactName + ' - Ledger History';
+    document.getElementById('drawer-settle-contact-id').value = contactId;
+
+    var listEl = document.getElementById('drawer-entries-list');
+    var summaryEl = document.getElementById('drawer-balance-summary');
+    listEl.innerHTML = '<p class="empty">Loading ledger entries...</p>';
+    summaryEl.innerHTML = '';
+
+    fetch('/api/contacts/ledger?contact_id=' + contactId)
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data.error) {
+          listEl.innerHTML = '<p class="empty error">' + data.error + '</p>';
+          return;
+        }
+
+        var bal = data.balance || {};
+        var net = bal.net_balance || 0;
+        var statusText = net > 0 ? ('Owes you Rs ' + net.toLocaleString('en-IN')) :
+          net < 0 ? ('You owe Rs ' + Math.abs(net).toLocaleString('en-IN')) : 'Settled (Rs 0)';
+
+        summaryEl.innerHTML =
+          '<div><strong>Net Status:</strong> <span style="font-weight:600;">' + statusText + '</span></div>' +
+          '<div style="font-size:12px; color:var(--muted); margin-top:4px;">Total Sent: Rs ' + (bal.total_you_sent || 0).toLocaleString('en-IN') +
+          ' | Total Received: Rs ' + (bal.total_they_sent || 0).toLocaleString('en-IN') + '</div>';
+
+        var entries = data.entries || [];
+        if (!entries.length) {
+          listEl.innerHTML = '<p class="empty">No ledger entries yet.</p>';
+          return;
+        }
+
+        var html = '<div style="display:flex; flex-direction:column; gap:10px;">';
+        entries.forEach(function (e) {
+          var isYou = e.entry_type === 'you_sent';
+          var color = isYou ? 'var(--success)' : 'var(--error)';
+          var prefix = isYou ? '+ ' : '- ';
+          var passthroughBadge = e.is_passthrough ? '<span class="badge subtle" style="font-size:10px; margin-left:6px;">Pass-Through</span>' : '';
+          var openingBadge = e.is_opening_balance ? '<span class="badge warn" style="font-size:10px; margin-left:6px;">Opening Balance</span>' : '';
+          var noteText = e.notes ? ('<div style="font-size:12px; color:var(--muted); margin-top:2px;">' + e.notes + '</div>') : '';
+          var purposeText = e.purpose ? ('<span class="badge subtle" style="font-size:10px;">' + e.purpose + '</span>') : '';
+
+          html += '<div style="background:var(--background-color); border:1px solid var(--border-color); border-radius:6px; padding:10px;">' +
+            '<div style="display:flex; justify-content:space-between; align-items:center;">' +
+            '<span style="font-size:12px; color:var(--muted);">' + (e.entry_date || '') + '</span>' +
+            '<strong style="color:' + color + ';">' + prefix + 'Rs ' + (e.amount || 0).toLocaleString('en-IN') + '</strong>' +
+            '</div>' +
+            '<div style="margin-top:4px;">' + purposeText + passthroughBadge + openingBadge + '</div>' +
+            noteText +
+            '</div>';
+        });
+        html += '</div>';
+        listEl.innerHTML = html;
+      })
+      .catch(function (err) {
+        console.error('Error fetching ledger:', err);
+        listEl.innerHTML = '<p class="empty error">Failed to load ledger history.</p>';
+      });
+  };
 })();

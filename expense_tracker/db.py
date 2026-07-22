@@ -118,13 +118,48 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at text not null,
             unique(debit_id, credit_id)
         );
+
+        create table if not exists contacts (
+            id integer primary key autoincrement,
+            name text not null unique,
+            aliases_json text not null default '[]',
+            notes text,
+            created_at text not null
+        );
+
+        create table if not exists ledger_entries (
+            id integer primary key autoincrement,
+            contact_id integer not null references contacts(id) on delete cascade,
+            transaction_id integer references transactions(id) on delete set null,
+            direction text not null,
+            amount numeric not null,
+            purpose text not null,
+            is_passthrough integer default 0,
+            passthrough_pair_id integer references ledger_entries(id),
+            is_opening_balance integer default 0,
+            notes text,
+            entry_date text not null,
+            created_by text not null default 'user',
+            created_at text not null
+        );
+
+        create index if not exists idx_ledger_contact on ledger_entries(contact_id);
+        create index if not exists idx_ledger_transaction on ledger_entries(transaction_id);
         """
     )
     conn.commit()
-    # Column migrations for multi-user support
+    seed_default_contacts(conn)
+    # Column migrations for multi-user & ledger support
     _safe_add_column(conn, "transactions", "uploaded_by", "TEXT")
     _safe_add_column(conn, "transactions", "source_txn_id", "INTEGER")
     _safe_add_column(conn, "classifications", "shared_with", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "direction", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "purpose", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "is_passthrough", "INTEGER DEFAULT 0")
+    _safe_add_column(conn, "ledger_entries", "passthrough_pair_id", "INTEGER")
+    _safe_add_column(conn, "ledger_entries", "is_opening_balance", "INTEGER DEFAULT 0")
+    _safe_add_column(conn, "ledger_entries", "entry_date", "TEXT")
+    _safe_add_column(conn, "ledger_entries", "created_by", "TEXT DEFAULT 'user'")
     conn.commit()
     swept = apply_learned_rules_to_pending(conn)
     if swept:
@@ -140,6 +175,22 @@ def _safe_add_column(conn: sqlite3.Connection, table: str, column: str, col_type
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
     except Exception as exc:
         logger.debug("Column migration skipped: %s", exc)
+
+
+def seed_default_contacts(conn: sqlite3.Connection) -> None:
+    from .contacts import create_contact
+    defaults = [
+        ("Highnes", ["highnes", "highnes.7@sibl", "8078866770", "highnesj sibl", "dr highnes sibl"]),
+        ("Ranjima", ["ranjima", "9497760612"]),
+        ("Ananthu", ["ananthu", "anand"]),
+        ("Bipin", ["bipin"]),
+        ("Anupriya", ["anupriya"]),
+    ]
+    for name, aliases in defaults:
+        try:
+            create_contact(conn, name, aliases)
+        except Exception:
+            pass
 
 
 def file_sha256(path: Path) -> str:
@@ -569,6 +620,17 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
         "select * from merchant_rules order by updated_at desc, merchant_display"
     ).fetchall()
     from .connections import get_connection_suggestions
+    from .contacts import get_all_contacts, calculate_contact_balance, detect_passthrough_candidates
+    contacts = get_all_contacts(conn)
+    contacts_with_balances = []
+    for c in contacts:
+        bal = calculate_contact_balance(conn, c["id"])
+        contacts_with_balances.append({
+            "contact": c,
+            "balance": bal,
+        })
+    passthrough_candidates = detect_passthrough_candidates(conn)
+
     return {
         "transactions": rows,
         "pending": pending,
@@ -578,6 +640,8 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
         "suggestions": get_connection_suggestions(conn),
         "links": get_transaction_links(conn),
         "linkable": get_linkable_transactions(conn),
+        "contacts": contacts_with_balances,
+        "passthrough_candidates": passthrough_candidates,
     }
 
 
