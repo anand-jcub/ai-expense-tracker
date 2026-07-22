@@ -619,6 +619,102 @@ def summary_all_contacts(conn: sqlite3.Connection) -> list[SettlementBalance]:
     return out
 
 
+def suggest_merge_groups(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, Any]]:
+    """Suggest contact clusters that look like the same person (for People merge UI).
+
+    Winner prefers hub contacts (aliases/notes); losers are merchant-shaped fragments
+    that share a significant name token with the winner.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(contacts)").fetchall()}
+    has_merged = "merged_into_id" in cols
+    sql = "SELECT * FROM contacts"
+    if has_merged:
+        sql += " WHERE merged_into_id IS NULL"
+    sql += " ORDER BY id ASC"
+    rows = [dict(r) for r in conn.execute(sql).fetchall()]
+    for c in rows:
+        try:
+            c["aliases"] = json.loads(c.get("aliases_json") or "[]")
+        except Exception:
+            c["aliases"] = []
+        c["hub"] = is_hub_contact(c)
+        c["merchant"] = is_merchant_shaped(c.get("name") or "", c["aliases"])
+        # Significant tokens (>=4 chars) from name + aliases
+        bag: set[str] = set()
+        for part in [c.get("name") or ""] + list(c["aliases"]):
+            norm = _normalize_merchant_text(str(part))
+            for tok in re.split(r"\s+", norm):
+                if len(tok) >= 4 and tok not in BANK_TOKENS:
+                    bag.add(tok)
+        c["tokens"] = bag
+
+    # Union-find by shared tokens (only link hub↔fragment or fragment↔fragment when tokens overlap)
+    parent = {c["id"]: c["id"] for c in rows}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    by_id = {c["id"]: c for c in rows}
+    for i, a in enumerate(rows):
+        for b in rows[i + 1 :]:
+            shared = a["tokens"] & b["tokens"]
+            if not shared:
+                # also: one name contained in the other (len>=5)
+                na = (a.get("name") or "").lower()
+                nb = (b.get("name") or "").lower()
+                if len(na) >= 5 and len(nb) >= 5 and (na in nb or nb in na):
+                    union(a["id"], b["id"])
+                continue
+            # Prefer clusters that include at least one merchant-shaped or hub
+            if a["hub"] or b["hub"] or a["merchant"] or b["merchant"]:
+                union(a["id"], b["id"])
+
+    clusters: dict[int, list[dict]] = {}
+    for c in rows:
+        clusters.setdefault(find(c["id"]), []).append(c)
+
+    suggestions: list[dict[str, Any]] = []
+    for members in clusters.values():
+        if len(members) < 2:
+            continue
+        # Winner: hub first, then more aliases, then lower id
+        members_sorted = sorted(
+            members,
+            key=lambda c: (
+                0 if c["hub"] else 1,
+                -len(c.get("aliases") or []),
+                0 if not c["merchant"] else 1,
+                c["id"],
+            ),
+        )
+        winner = members_sorted[0]
+        losers = members_sorted[1:]
+        # Skip pure-hub clusters with no fragments (optional noise)
+        if not any(m["merchant"] or not m["hub"] for m in losers) and winner["hub"]:
+            # still useful if multiple short names
+            if all(m["hub"] for m in members):
+                continue
+        suggestions.append({
+            "winner_id": winner["id"],
+            "winner_name": winner["name"],
+            "loser_ids": [m["id"] for m in losers],
+            "loser_names": [m["name"] for m in losers],
+            "size": len(members),
+            "reason": "Shared name tokens / similar labels",
+        })
+
+    suggestions.sort(key=lambda s: -s["size"])
+    return suggestions[:limit]
+
+
 def format_settlement_answer(bal: SettlementBalance) -> str:
     """NL: net + short breakdown."""
     name = bal.contact_name

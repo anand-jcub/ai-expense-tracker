@@ -264,7 +264,25 @@ def render_money_flows_view(transactions: list[dict]) -> str:
     return f'<div class="timeline" style="margin-top:16px;">{"".join(items_html)}</div>'
 
 
-def render_contacts_section(contacts: list[dict], passthrough_candidates: list[dict]) -> str:
+def _contact_option_tags(contacts: list[dict], selected_id=None) -> str:
+    opts = ['<option value="">— Select contact —</option>']
+    for item in contacts:
+        c = item.get("contact") if isinstance(item, dict) and "contact" in item else item
+        if not c:
+            continue
+        cid = c.get("id")
+        name = c.get("name") or "?"
+        sel = " selected" if selected_id and int(selected_id) == int(cid) else ""
+        opts.append(f'<option value="{cid}"{sel}>{esc(name)}</option>')
+    return "".join(opts)
+
+
+def render_contacts_section(
+    contacts: list[dict],
+    passthrough_candidates: list[dict],
+    partner_balances: list[dict] | None = None,
+    merge_suggestions: list[dict] | None = None,
+) -> str:
     # Compute aggregate metrics
     total_owes_you = Decimal("0")
     total_you_owe = Decimal("0")
@@ -294,6 +312,44 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
     </div>
     """
 
+    # Who owes whom (on People)
+    people_settlement_html = render_home_settlement_strip(partner_balances or [], limit=8)
+
+    # Merge suggestions
+    merge_html = ""
+    if merge_suggestions:
+        cards = []
+        for sug in merge_suggestions[:6]:
+            losers = ", ".join(esc(n) for n in sug.get("loser_names") or [])
+            loser_ids = ",".join(str(i) for i in sug.get("loser_ids") or [])
+            cards.append(
+                f"""
+                <div class="merge-suggest-card">
+                  <div class="merge-suggest-body">
+                    <strong>Merge into {esc(sug.get('winner_name') or '?')}</strong>
+                    <span class="merge-suggest-meta">Also: {losers}</span>
+                    <span class="merge-suggest-reason">{esc(sug.get('reason') or '')}</span>
+                  </div>
+                  <form method="post" action="/contacts/merge" class="merge-suggest-form"
+                        onsubmit="return confirm('Merge these contacts into {esc(sug.get('winner_name') or '')}? Ledger rows will be combined and duplicates cleaned.');">
+                    <input type="hidden" name="winner_id" value="{sug.get('winner_id')}">
+                    <input type="hidden" name="loser_ids" value="{loser_ids}">
+                    <button type="submit" class="button">Merge</button>
+                  </form>
+                </div>
+                """
+            )
+        merge_html = f"""
+        <section class="home-strip merge-suggestions" aria-label="Merge suggestions">
+          <div class="home-strip-header">
+            <h2>Suggested merges</h2>
+            <span class="home-chip muted" style="padding:4px 10px; font-size:11px;">{len(merge_suggestions)} cluster(s)</span>
+          </div>
+          <div class="merge-suggest-list">{"".join(cards)}</div>
+          <p class="empty" style="margin:8px 0 0; font-size:12px;">Merging reassigns ledger rows to the winner and voids migrate/pass-through duplicates.</p>
+        </section>
+        """
+
     # Search & Filter Controls
     search_bar_html = """
     <div style="display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; margin-bottom:20px;">
@@ -301,21 +357,23 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
         <input id="contact-search-input" onkeyup="filterContactCards()" placeholder="Search contact by name or handle..." style="width:100%; padding:10px 14px 10px 36px; border-radius:20px; border:1px solid var(--border-color); background:var(--surface-color); color:var(--text-color); font-size:14px;">
         <svg viewBox="0 0 24 24" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); width:16px; height:16px; fill:var(--muted);"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
       </div>
-      <div style="display:flex; gap:8px;">
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="button filter-pill active" data-filter="all" onclick="filterContactStatus('all', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">All</button>
         <button class="button subtle filter-pill" data-filter="owes_you" onclick="filterContactStatus('owes_you', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">Owes Me</button>
         <button class="button subtle filter-pill" data-filter="you_owe" onclick="filterContactStatus('you_owe', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">I Owe</button>
         <button class="button subtle filter-pill" data-filter="settled" onclick="filterContactStatus('settled', this)" style="padding:6px 14px; font-size:12px; border-radius:16px;">Settled</button>
         <button class="button" onclick="document.getElementById('modal-add-contact').style.display='flex'" style="padding:6px 16px; font-size:13px; border-radius:20px;">+ New Contact</button>
+        <button class="button subtle" type="button" onclick="document.getElementById('modal-manual-merge').style.display='flex'" style="padding:6px 16px; font-size:13px; border-radius:20px;">Manual merge</button>
       </div>
     </div>
     """
 
-    # Pass-through banner
+    # Pass-through banner with contact pickers when unlinked
+    contact_opts = _contact_option_tags(contacts)
     banner_html = ""
     if passthrough_candidates:
         candidate_items = []
-        for cand in passthrough_candidates[:3]:
+        for cand in passthrough_candidates[:5]:
             amt = cand.get("credit_amount") or cand.get("amount") or 0
             from_name = cand.get("credit_contact") or cand.get("credit_merchant") or "Unknown"
             to_name = cand.get("debit_contact") or cand.get("debit_merchant") or "Unknown"
@@ -324,26 +382,45 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
             debit_id = cand.get("debit_tx_id") or cand.get("debit_id") or 0
             from_contact_id = cand.get("from_contact_id") or 0
             to_contact_id = cand.get("to_contact_id") or 0
+            needs_from = not from_contact_id
+            needs_to = not to_contact_id
+            from_field = (
+                f'<label class="pt-pick">From (received)<select name="from_contact_id" required>{_contact_option_tags(contacts, from_contact_id or None)}</select></label>'
+                if needs_from
+                else f'<input type="hidden" name="from_contact_id" value="{from_contact_id}">'
+            )
+            to_field = (
+                f'<label class="pt-pick">To (forwarded)<select name="to_contact_id" required>{_contact_option_tags(contacts, to_contact_id or None)}</select></label>'
+                if needs_to
+                else f'<input type="hidden" name="to_contact_id" value="{to_contact_id}">'
+            )
+            warn = ""
+            if needs_from or needs_to:
+                warn = '<div class="pt-warn">Link missing contact(s) before confirming.</div>'
             candidate_items.append(
                 f"""
-                <div class="passthrough-card" style="background:rgba(59,130,246,0.08); border-left:4px solid var(--accent); padding:14px; border-radius:8px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-                  <div>
-                    <strong style="color:var(--accent);">⚡ Pass-Through Candidate Detected:</strong> Received <strong>{money(amt)}</strong> from <strong>{esc(from_name)}</strong> &amp; forwarded to <strong>{esc(to_name)}</strong> on {esc(dt)}.
+                <div class="passthrough-card">
+                  <div class="passthrough-card-main">
+                    <strong class="pt-title">⚡ Pass-through candidate</strong>
+                    <div>Received <strong>{money(amt)}</strong> from <strong>{esc(from_name)}</strong>
+                    → forwarded to <strong>{esc(to_name)}</strong> on {esc(dt)}</div>
+                    {warn}
                   </div>
-                  <form method="post" action="/ledger/passthrough/confirm" style="display:inline-flex; gap:8px; margin:0;">
+                  <form method="post" action="/ledger/passthrough/confirm" class="passthrough-form">
                     <input type="hidden" name="credit_id" value="{credit_id}">
                     <input type="hidden" name="debit_id" value="{debit_id}">
-                    <input type="hidden" name="from_contact_id" value="{from_contact_id}">
-                    <input type="hidden" name="to_contact_id" value="{to_contact_id}">
                     <input type="hidden" name="amount" value="{amt}">
                     <input type="hidden" name="entry_date" value="{dt}">
-                    <button type="submit" name="action" value="confirm" class="button" style="padding:4px 12px; font-size:12px;">Link Pass-Through</button>
-                    <button type="submit" name="action" value="dismiss" class="button subtle" style="padding:4px 12px; font-size:12px;">Dismiss</button>
+                    <div class="pt-pickers">{from_field}{to_field}</div>
+                    <div class="pt-actions">
+                      <button type="submit" name="action" value="confirm" class="button">Confirm pass-through</button>
+                      <button type="submit" name="action" value="dismiss" class="button subtle" formnovalidate>Dismiss</button>
+                    </div>
                   </form>
                 </div>
                 """
             )
-        banner_html = f'<div class="passthrough-candidates-banner" style="margin-bottom:20px;">{"".join(candidate_items)}</div>'
+        banner_html = f'<div class="passthrough-candidates-banner">{"".join(candidate_items)}</div>'
 
     # Contacts Cards Grid
     cards_html = []
@@ -495,20 +572,54 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
         <!-- Filled dynamically by JS -->
       </div>
 
-      <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
-        <div style="display:flex; gap:6px;">
-          <button class="button filter-pill active" onclick="filterDrawerEntries('all', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">All</button>
-          <button class="button subtle filter-pill" onclick="filterDrawerEntries('you_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Given (+)</button>
-          <button class="button subtle filter-pill" onclick="filterDrawerEntries('they_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Received (-)</button>
-        </div>
-        <form method="post" action="/ledger/settle" style="margin:0;">
-          <input type="hidden" id="drawer-settle-contact-id" name="contact_id">
-          <button type="submit" class="button subtle" onclick="return confirm('Mark full balance as settled?')" style="font-size:12px; color:var(--muted);">Settle Balance (₹0)</button>
-        </form>
+      <div style="margin-bottom:12px; display:flex; gap:6px; flex-wrap:wrap;">
+        <button class="button filter-pill active" onclick="filterDrawerEntries('all', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">All</button>
+        <button class="button subtle filter-pill" onclick="filterDrawerEntries('you_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Given (+)</button>
+        <button class="button subtle filter-pill" onclick="filterDrawerEntries('they_sent', this)" style="padding:4px 10px; font-size:11px; border-radius:12px;">Received (-)</button>
       </div>
 
-      <div id="drawer-entries-list">
+      <form method="post" action="/ledger/settle" id="drawer-settle-form" class="drawer-settle-form">
+        <input type="hidden" id="drawer-settle-contact-id" name="contact_id">
+        <div class="drawer-settle-row">
+          <label>Settle amount (₹)
+            <input type="number" name="amount" id="drawer-settle-amount" step="0.01" min="0.01" placeholder="Full balance if empty">
+          </label>
+          <div class="drawer-settle-actions">
+            <button type="button" class="button subtle" id="drawer-settle-full-btn" onclick="fillFullSettleAmount()">Use full</button>
+            <button type="submit" class="button" onclick="return confirmSettle()">Settle</button>
+          </div>
+        </div>
+        <p class="empty" style="margin:6px 0 0; font-size:11px;">Leave amount blank to settle the full USB net. Partial settle posts a compensating entry.</p>
+      </form>
+
+      <div id="drawer-entries-list" style="margin-top:16px;">
         <!-- Filled dynamically by JS -->
+      </div>
+    </div>
+    """
+
+    manual_merge_modal = f"""
+    <div id="modal-manual-merge" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); align-items:center; justify-content:center; z-index:1000;">
+      <div style="background:var(--surface-color); border:1px solid var(--border-color); padding:28px; border-radius:16px; width:100%; max-width:460px; box-shadow:0 20px 40px rgba(0,0,0,0.3);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+          <h3 style="margin:0; font-size:18px;">Manual merge</h3>
+          <button class="button subtle" type="button" onclick="document.getElementById('modal-manual-merge').style.display='none'">✕</button>
+        </div>
+        <form method="post" action="/contacts/merge" onsubmit="return confirm('Merge selected contacts?');">
+          <label style="display:block; margin-bottom:12px; font-size:13px; font-weight:600;">Keep (winner)
+            <select name="winner_id" required style="width:100%; margin-top:6px; padding:10px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
+              {contact_opts}
+            </select>
+          </label>
+          <label style="display:block; margin-bottom:16px; font-size:13px; font-weight:600;">Merge away (loser IDs, comma-separated)
+            <input name="loser_ids" required placeholder="e.g. 12,15,18" style="width:100%; margin-top:6px; padding:10px; border-radius:8px; border:1px solid var(--border-color); background:var(--background-color); color:var(--text-color);">
+          </label>
+          <p class="empty" style="font-size:12px; margin:0 0 16px;">Tip: open a suggested merge card for one-click clusters, or use contact IDs from the cards.</p>
+          <div style="display:flex; justify-content:flex-end; gap:10px;">
+            <button type="button" class="button subtle" onclick="document.getElementById('modal-manual-merge').style.display='none'">Cancel</button>
+            <button type="submit" class="button">Merge</button>
+          </div>
+        </form>
       </div>
     </div>
     """
@@ -519,11 +630,14 @@ def render_contacts_section(contacts: list[dict], passthrough_candidates: list[d
         <h2>People (Khata)</h2>
       </div>
       {summary_cards_html}
+      {people_settlement_html}
+      {merge_html}
       {search_bar_html}
       {banner_html}
       {grid_html}
       {add_contact_modal}
       {add_entry_modal}
+      {manual_merge_modal}
       {drawer_html}
     </section>
     """
@@ -1215,20 +1329,6 @@ def page(
         """,
         f"{len(data['shared'])} shared",
     )
-    # Settlement / partner balances (USB when flag on)
-    partner_html = ""
-    if partner_balances:
-        rows_html = "".join(
-            f'<tr><td><strong>{esc(str(b.get("username", b.get("contact_name", "?"))).title())}</strong></td>'
-            f'<td class="amount {"credit" if float(b["net"]) >= 0 else "debit"}">'
-            f'{"owes you" if float(b["net"]) >= 0 else "you owe"} {money(abs(float(b["net"])))}</td></tr>'
-            for b in partner_balances
-        )
-        partner_html = (
-            f'<section style="margin-top:16px;"><h2>Who owes whom (settlement)</h2>'
-            f'<table><tbody>{rows_html}</tbody></table></section>'
-        )
-
     # Contact datalist for shared-with picker
     contact_options = ""
     for item in data.get("contacts") or []:
@@ -1239,6 +1339,15 @@ def page(
             continue
         contact_options += f'<option value="{esc(c.get("name", ""))}">'
     partner_datalist = f'<datalist id="contact-partner-list">{contact_options}</datalist>'
+
+    # Merge suggestions for People tab
+    merge_suggestions: list[dict] = []
+    try:
+        from .settlement import suggest_merge_groups
+        # Need a live connection — suggestions precomputed in page only if provided via data
+        merge_suggestions = data.get("merge_suggestions") or []
+    except Exception:
+        merge_suggestions = []
 
     # User header badge
     user_badge = ""
@@ -1251,7 +1360,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=9">
+  <link rel="stylesheet" href="/style.css?v=11">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1274,33 +1383,38 @@ def page(
       <nav class="nav-tabs" aria-label="Main Navigation">
         <a href="#dashboard" class="tab-link active" data-tab="dashboard">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-          <span>Dashboard</span>
+          <span>Home</span>
         </a>
-        <a href="#import-add" class="tab-link" data-tab="import-add">
-          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-          <span>Import / Add</span>
+        <a href="#review" class="tab-link" data-tab="review">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
+          <span>Review</span>
+          {f'<span class="tab-badge warn" id="review-count-badge">{pending_badge_count}</span>' if pending_badge_count > 0 else ''}
         </a>
         <a href="#contacts" class="tab-link" data-tab="contacts">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
           <span>People</span>
         </a>
-        <a href="#review" class="tab-link" data-tab="review">
-          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
-          <span>Review Queue</span>
-          {f'<span class="tab-badge warn" id="review-count-badge">{pending_badge_count}</span>' if pending_badge_count > 0 else ''}
+        <a href="#import-add" class="tab-link" data-tab="import-add">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <span>Import</span>
         </a>
-        <a href="#transactions" class="tab-link" data-tab="transactions">
-          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-          <span>Edit Classifications</span>
-        </a>
-        <a href="#search" class="tab-link" data-tab="search">
-          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-          <span>Credit / Debit Search</span>
-        </a>
-        <a href="#rules" class="tab-link" data-tab="rules">
-          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-          <span>Knowledge &amp; Shared</span>
-        </a>
+        <details class="nav-more">
+          <summary class="nav-more-summary">
+            <svg class="nav-icon" viewBox="0 0 24 24"><path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+            <span>More</span>
+          </summary>
+          <div class="nav-more-items">
+            <a href="#transactions" class="tab-link" data-tab="transactions">
+              <span>Edit classifications</span>
+            </a>
+            <a href="#search" class="tab-link" data-tab="search">
+              <span>Credit / debit search</span>
+            </a>
+            <a href="#rules" class="tab-link" data-tab="rules">
+              <span>Rules &amp; shared</span>
+            </a>
+          </div>
+        </details>
       </nav>
     </aside>
 
@@ -1374,7 +1488,12 @@ def page(
 
       <!-- Tab 3: People (Khata) -->
       <div id="pane-contacts" class="tab-pane">
-        {render_contacts_section(data.get('contacts', []), data.get('passthrough_candidates', []))}
+        {render_contacts_section(
+            data.get('contacts', []),
+            data.get('passthrough_candidates', []),
+            partner_balances=partner_balances,
+            merge_suggestions=data.get('merge_suggestions') or merge_suggestions,
+        )}
       </div>
 
       <!-- Tab 4: Review Queue -->
@@ -1460,11 +1579,11 @@ def page(
           </section>
           <section>
             <h2>Shared expenses</h2>
-            {partner_html}
+            <p class="empty" style="margin-top:0;">Person balances live under <a href="#contacts" data-tab-jump="contacts">People</a> and Home.</p>
             <div style="overflow-x: auto; margin-top:12px;">
               <table>
-                <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th></tr></thead>
-                <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td></tr>" for r in data['shared']) or '<tr><td colspan="6" class="empty">No shared expenses yet.</td></tr>'}</tbody>
+                <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th><th>Partner</th></tr></thead>
+                <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td><td>{esc((r['shared_with'] if hasattr(r, 'keys') and 'shared_with' in r.keys() and r['shared_with'] else None) or '—')}</td></tr>" for r in data['shared']) or '<tr><td colspan="7" class="empty">No shared expenses yet.</td></tr>'}</tbody>
               </table>
             </div>
           </section>
@@ -1473,7 +1592,7 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=10"></script>
+  <script src="/app.js?v=11"></script>
 </body>
 </html>
 """

@@ -840,6 +840,7 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     ).fetchall()
     from .connections import get_connection_suggestions
     from .contacts import get_all_contacts, calculate_contact_balance, detect_passthrough_candidates
+    from .settlement import suggest_merge_groups
     contacts = get_all_contacts(conn)
     contacts_with_balances = []
     for c in contacts:
@@ -851,6 +852,11 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
             "balance": bal,
         })
     passthrough_candidates = detect_passthrough_candidates(conn)
+    try:
+        merge_suggestions = suggest_merge_groups(conn)
+    except Exception:
+        logger.exception("merge suggestions failed")
+        merge_suggestions = []
 
     return {
         "transactions": rows,
@@ -863,6 +869,7 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
         "linkable": get_linkable_transactions(conn),
         "contacts": contacts_with_balances,
         "passthrough_candidates": passthrough_candidates,
+        "merge_suggestions": merge_suggestions,
     }
 
 

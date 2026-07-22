@@ -615,6 +615,35 @@
     });
   };
 
+  window._drawerSettleNet = 0;
+
+  window.fillFullSettleAmount = function () {
+    var inp = document.getElementById('drawer-settle-amount');
+    if (!inp) return;
+    var absNet = Math.abs(window._drawerSettleNet || 0);
+    if (absNet > 0) {
+      inp.value = absNet.toFixed(2);
+    } else {
+      inp.value = '';
+    }
+  };
+
+  window.confirmSettle = function () {
+    var absNet = Math.abs(window._drawerSettleNet || 0);
+    var inp = document.getElementById('drawer-settle-amount');
+    var raw = inp && inp.value ? parseFloat(inp.value) : absNet;
+    if (!absNet) {
+      alert('Already settled (₹0).');
+      return false;
+    }
+    if (raw > absNet + 0.001) {
+      alert('Amount cannot exceed outstanding balance of ₹' + absNet.toLocaleString('en-IN'));
+      return false;
+    }
+    var label = (inp && inp.value) ? ('₹' + raw.toLocaleString('en-IN')) : 'full balance';
+    return confirm('Settle ' + label + '?');
+  };
+
   window.openLedgerDrawer = function (contactId, contactName) {
     var drawer = document.getElementById('ledger-drawer');
     var backdrop = document.getElementById('ledger-drawer-backdrop');
@@ -623,6 +652,9 @@
     drawer.style.display = 'flex';
     document.getElementById('drawer-contact-name').innerText = contactName + ' — History';
     document.getElementById('drawer-settle-contact-id').value = contactId;
+    var settleAmt = document.getElementById('drawer-settle-amount');
+    if (settleAmt) settleAmt.value = '';
+    window._drawerSettleNet = 0;
 
     var listEl = document.getElementById('drawer-entries-list');
     var summaryEl = document.getElementById('drawer-balance-summary');
@@ -644,6 +676,13 @@
           : (data.entries && Array.isArray(data.entries.entries) ? data.entries.entries : []);
         var virtualLines = Array.isArray(data.virtual_shared_lines) ? data.virtual_shared_lines : [];
         var net = (bal.net_balance != null ? bal.net_balance : bal.net) || 0;
+        window._drawerSettleNet = net;
+        if (settleAmt) {
+          settleAmt.max = Math.abs(net).toFixed(2);
+          settleAmt.placeholder = Math.abs(net) > 0
+            ? ('Full = ₹' + Math.abs(net).toLocaleString('en-IN'))
+            : 'Already settled';
+        }
         var statusColor = net > 0 ? 'var(--success)' : net < 0 ? 'var(--error)' : 'var(--muted)';
         var statusText = net > 0 ? ('Owes you ₹' + net.toLocaleString('en-IN')) :
           net < 0 ? ('You owe ₹' + Math.abs(net).toLocaleString('en-IN')) : 'Settled (₹0)';
