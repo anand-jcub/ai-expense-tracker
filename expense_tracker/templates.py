@@ -315,6 +315,9 @@ def render_contacts_section(
     # Who owes whom (on People)
     people_settlement_html = render_home_settlement_strip(partner_balances or [], limit=8)
 
+    # Contact select options (rolling, opening, PT pickers, manual merge)
+    contact_opts = _contact_option_tags(contacts)
+
     # Merge suggestions
     merge_html = ""
     if merge_suggestions:
@@ -368,8 +371,74 @@ def render_contacts_section(
     </div>
     """
 
+    # Rolling mode + Opening balance (user's main real-world workflows)
+    today = __import__("datetime").date.today().isoformat()
+    workflow_html = f"""
+    <div class="people-workflow-grid">
+      <section class="home-strip rolling-panel" aria-label="Rolling mode">
+        <div class="home-strip-header">
+          <h2>Rolling mode</h2>
+          <span class="home-chip accent" style="padding:4px 10px; font-size:11px;">A → you → B · nets stay 0</span>
+        </div>
+        <p class="empty" style="margin:0 0 12px; font-size:13px;">
+          e.g. Ranjima sends you ₹20,000 → you send Highnes ₹20,000. Both legs pass-through (not personal debt).
+        </p>
+        <form method="post" action="/ledger/rolling" class="workflow-form"
+              onsubmit="return confirm('Post rolling chain? Neither person\\'s debt net should change.');">
+          <label>Money received from
+            <select name="from_contact_id" required>{contact_opts}</select>
+          </label>
+          <label>Money sent to
+            <select name="to_contact_id" required>{contact_opts}</select>
+          </label>
+          <label>Amount (₹)
+            <input type="number" name="amount" step="0.01" min="0.01" required placeholder="20000">
+          </label>
+          <label>Date
+            <input type="date" name="entry_date" value="{today}">
+          </label>
+          <label class="workflow-notes">Note (optional)
+            <input type="text" name="notes" placeholder="e.g. Highnes needed 20k, Ranjima funded">
+          </label>
+          <button type="submit" class="button">Post rolling chain</button>
+        </form>
+      </section>
+
+      <section class="home-strip opening-panel" aria-label="Opening balance">
+        <div class="home-strip-header">
+          <h2>Opening / stock balance</h2>
+          <span class="home-chip muted" style="padding:4px 10px; font-size:11px;">one click</span>
+        </div>
+        <p class="empty" style="margin:0 0 12px; font-size:13px;">
+          e.g. Highnes already owes you ₹50,000 before this month&apos;s bank lines.
+        </p>
+        <form method="post" action="/ledger/opening" class="workflow-form"
+              onsubmit="return confirm('Set opening balance for this person?');">
+          <label>Person
+            <select name="contact_id" required>{contact_opts}</select>
+          </label>
+          <label>Direction
+            <select name="direction">
+              <option value="they_owe_you" selected>They owe me</option>
+              <option value="you_owe_them">I owe them</option>
+            </select>
+          </label>
+          <label>Amount (₹)
+            <input type="number" name="amount" step="0.01" min="0.01" required placeholder="50000">
+          </label>
+          <label>Date
+            <input type="date" name="entry_date" value="{today}">
+          </label>
+          <label class="workflow-notes">Note (optional)
+            <input type="text" name="notes" placeholder="e.g. Prior balance before June">
+          </label>
+          <button type="submit" class="button">Set opening</button>
+        </form>
+      </section>
+    </div>
+    """
+
     # Pass-through banner with contact pickers when unlinked
-    contact_opts = _contact_option_tags(contacts)
     banner_html = ""
     if passthrough_candidates:
         candidate_items = []
@@ -631,6 +700,7 @@ def render_contacts_section(
       </div>
       {summary_cards_html}
       {people_settlement_html}
+      {workflow_html}
       {merge_html}
       {search_bar_html}
       {banner_html}
@@ -1663,7 +1733,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=13">
+  <link rel="stylesheet" href="/style.css?v=14">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1873,7 +1943,7 @@ def page(
   </div>
   
   {mobile_nav_html}
-  <script src="/app.js?v=13"></script>
+  <script src="/app.js?v=14"></script>
 </body>
 </html>
 """

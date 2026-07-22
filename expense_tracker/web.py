@@ -352,6 +352,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 self.handle_materialize_shared(username)
             elif self.path == "/contacts/merge":
                 self.handle_contacts_merge(username)
+            elif self.path == "/ledger/rolling":
+                self.handle_ledger_rolling(username)
+            elif self.path == "/ledger/opening":
+                self.handle_ledger_opening(username)
             else:
                 self.send_error(404)
         except Exception:
@@ -1018,6 +1022,81 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 n = materialize_virtual_shares(conn, contact_id)
             self.redirect(message=f"Materialized {n} shared share(s).", tab="contacts")
         except Exception as exc:
+            self.redirect(error=str(exc), tab="contacts")
+
+    def handle_ledger_rolling(self, username: str) -> None:
+        """A → You → B rolling chain: two pass-through legs, nets unchanged."""
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        try:
+            from_id = int(params.get("from_contact_id", [0])[0])
+            to_id = int(params.get("to_contact_id", [0])[0])
+            amount = Decimal(params.get("amount", ["0"])[0])
+            entry_date = params.get("entry_date", [""])[0] or datetime.now().strftime("%Y-%m-%d")
+            notes = params.get("notes", [None])[0]
+            db_path = self._db_path_for(username)
+            with connect(db_path) as conn:
+                from .settlement import record_rolling_chain
+
+                result = record_rolling_chain(
+                    conn,
+                    from_contact_id=from_id,
+                    to_contact_id=to_id,
+                    amount=amount,
+                    entry_date=entry_date,
+                    notes=notes or None,
+                    created_by="user",
+                )
+            self.redirect(
+                message=(
+                    f"Rolling ₹{result['amount']:,.2f}: "
+                    f"{result['from_contact_name']} → you → {result['to_contact_name']} "
+                    f"(pass-through; nets unchanged)."
+                ),
+                tab="contacts",
+            )
+        except (ValueError, InvalidOperation) as exc:
+            self.redirect(error=str(exc), tab="contacts")
+        except Exception as exc:
+            logger.exception("rolling chain failed")
+            self.redirect(error=str(exc), tab="contacts")
+
+    def handle_ledger_opening(self, username: str) -> None:
+        """One-click opening balance: they owe you / you owe them."""
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        params = urllib.parse.parse_qs(body)
+        try:
+            contact_id = int(params.get("contact_id", [0])[0])
+            amount = Decimal(params.get("amount", ["0"])[0])
+            they_owe = params.get("direction", ["they_owe_you"])[0] != "you_owe_them"
+            entry_date = params.get("entry_date", [""])[0] or datetime.now().strftime("%Y-%m-%d")
+            notes = params.get("notes", [None])[0]
+            db_path = self._db_path_for(username)
+            with connect(db_path) as conn:
+                from .settlement import record_opening_balance
+
+                result = record_opening_balance(
+                    conn,
+                    contact_id=contact_id,
+                    amount=amount,
+                    they_owe_you=they_owe,
+                    entry_date=entry_date,
+                    notes=notes or None,
+                    created_by="user",
+                )
+            name = result["contact_name"]
+            amt = result["amount"]
+            if they_owe:
+                msg = f"Opening set: {name} owes you ₹{amt:,.2f}."
+            else:
+                msg = f"Opening set: you owe {name} ₹{amt:,.2f}."
+            self.redirect(message=msg, tab="contacts")
+        except (ValueError, InvalidOperation) as exc:
+            self.redirect(error=str(exc), tab="contacts")
+        except Exception as exc:
+            logger.exception("opening balance failed")
             self.redirect(error=str(exc), tab="contacts")
 
     def handle_contacts_merge(self, username: str) -> None:

@@ -1175,6 +1175,64 @@ a.home-chip:hover {
 
 .loan-suggest-form { margin: 0; }
 
+/* ── Rolling + Opening workflows ── */
+.people-workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.workflow-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.workflow-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.workflow-form label.workflow-notes {
+  grid-column: 1 / -1;
+}
+
+.workflow-form select,
+.workflow-form input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.workflow-form button[type="submit"] {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.rolling-panel {
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.opening-panel {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+@media (max-width: 560px) {
+  .workflow-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── P3: Onboarding ── */
 .onboard-list {
   list-style: none;

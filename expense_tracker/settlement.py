@@ -619,6 +619,162 @@ def summary_all_contacts(conn: sqlite3.Connection) -> list[SettlementBalance]:
     return out
 
 
+def record_rolling_chain(
+    conn: sqlite3.Connection,
+    from_contact_id: int,
+    to_contact_id: int,
+    amount: Decimal | float | str,
+    entry_date: str | None = None,
+    notes: str | None = None,
+    created_by: str = "user",
+) -> dict[str, Any]:
+    """Post a pure A → You → B rolling chain as two linked pass-through legs.
+
+    - from_contact: money received from (they_sent, PT)
+    - to_contact: money forwarded to (you_sent, PT)
+
+    Neither contact's USB net should move for a pure roll (PT excluded from net).
+    """
+    from .contacts import add_ledger_entry
+
+    from_id = canonical_contact_id(conn, int(from_contact_id))
+    to_id = canonical_contact_id(conn, int(to_contact_id))
+    if from_id == to_id:
+        raise ValueError("From and To contacts must be different.")
+    try:
+        amt = Decimal(str(amount))
+    except InvalidOperation:
+        raise ValueError("Invalid amount.")
+    if amt <= 0:
+        raise ValueError("Amount must be greater than zero.")
+
+    if not entry_date:
+        entry_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    from_row = conn.execute("SELECT name FROM contacts WHERE id = ?", (from_id,)).fetchone()
+    to_row = conn.execute("SELECT name FROM contacts WHERE id = ?", (to_id,)).fetchone()
+    if not from_row or not to_row:
+        raise ValueError("Contact not found.")
+
+    note_from = notes or f"Rolling via me → {to_row['name']}"
+    note_to = notes or f"Rolling via me ← {from_row['name']}"
+
+    e1 = add_ledger_entry(
+        conn,
+        contact_id=from_id,
+        direction="they_sent",
+        amount=amt,
+        purpose="rolling",
+        is_passthrough=True,
+        notes=note_from,
+        entry_date=entry_date,
+        created_by=created_by,
+    )
+    e2 = add_ledger_entry(
+        conn,
+        contact_id=to_id,
+        direction="you_sent",
+        amount=amt,
+        purpose="rolling",
+        is_passthrough=True,
+        passthrough_pair_id=e1,
+        notes=note_to,
+        entry_date=entry_date,
+        created_by=created_by,
+    )
+    # Ensure source stamp
+    if _has_column(conn, "ledger_entries", "source"):
+        conn.execute(
+            "UPDATE ledger_entries SET source = 'user_rolling' WHERE id IN (?, ?)",
+            (e1, e2),
+        )
+        conn.commit()
+
+    logger.info(
+        "Rolling chain %s: %s → you → %s amount=%s legs=%s,%s",
+        entry_date, from_row["name"], to_row["name"], amt, e1, e2,
+    )
+    return {
+        "from_contact_id": from_id,
+        "from_contact_name": from_row["name"],
+        "to_contact_id": to_id,
+        "to_contact_name": to_row["name"],
+        "amount": float(amt),
+        "entry_date": entry_date,
+        "leg_from_id": e1,
+        "leg_to_id": e2,
+        "from_balance": settlement_to_json(compute_unified_settlement(conn, from_id)),
+        "to_balance": settlement_to_json(compute_unified_settlement(conn, to_id)),
+    }
+
+
+def record_opening_balance(
+    conn: sqlite3.Connection,
+    contact_id: int,
+    amount: Decimal | float | str,
+    *,
+    they_owe_you: bool = True,
+    entry_date: str | None = None,
+    notes: str | None = None,
+    created_by: str = "user",
+) -> dict[str, Any]:
+    """One-click opening / stock balance for a person.
+
+    they_owe_you=True  → you_sent (they owe you more)
+    they_owe_you=False → they_sent (you owe them more)
+    """
+    from .contacts import add_ledger_entry
+
+    cid = canonical_contact_id(conn, int(contact_id))
+    try:
+        amt = Decimal(str(amount))
+    except InvalidOperation:
+        raise ValueError("Invalid amount.")
+    if amt <= 0:
+        raise ValueError("Amount must be greater than zero.")
+
+    if not entry_date:
+        entry_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    crow = conn.execute("SELECT name FROM contacts WHERE id = ?", (cid,)).fetchone()
+    if not crow:
+        raise ValueError("Contact not found.")
+
+    direction = "you_sent" if they_owe_you else "they_sent"
+    default_note = (
+        f"Opening: {crow['name']} owes me ₹{amt}"
+        if they_owe_you
+        else f"Opening: I owe {crow['name']} ₹{amt}"
+    )
+    eid = add_ledger_entry(
+        conn,
+        contact_id=cid,
+        direction=direction,
+        amount=amt,
+        purpose="loan",
+        is_opening_balance=True,
+        notes=notes or default_note,
+        entry_date=entry_date,
+        created_by=created_by,
+    )
+    if _has_column(conn, "ledger_entries", "source"):
+        conn.execute(
+            "UPDATE ledger_entries SET source = 'opening' WHERE id = ?",
+            (eid,),
+        )
+        conn.commit()
+
+    bal = compute_unified_settlement(conn, cid)
+    return {
+        "ledger_entry_id": eid,
+        "contact_id": cid,
+        "contact_name": crow["name"],
+        "direction": direction,
+        "amount": float(amt),
+        "balance": settlement_to_json(bal),
+    }
+
+
 def suggest_loan_posts(conn: sqlite3.Connection, limit: int = 8) -> list[dict[str, Any]]:
     """Suggest posting bank debits as khata loans when merchant matches a contact.
 

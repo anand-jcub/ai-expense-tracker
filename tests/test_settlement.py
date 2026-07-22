@@ -223,6 +223,40 @@ def test_record_settlement_partial(conn):
     assert bal.status == "owes_you"
 
 
+def test_rolling_chain_does_not_change_nets(conn):
+    from expense_tracker.settlement import record_rolling_chain
+
+    ranjima = create_contact(conn, "RanjimaRoll", ["ranjima_roll"])
+    highnes = create_contact(conn, "HighnesRoll", ["highnes_roll"])
+    before_r = compute_unified_settlement(conn, ranjima).net
+    before_h = compute_unified_settlement(conn, highnes).net
+    result = record_rolling_chain(
+        conn, from_contact_id=ranjima, to_contact_id=highnes,
+        amount=Decimal("20000"), entry_date="2026-06-06",
+    )
+    assert result["amount"] == 20000.0
+    after_r = compute_unified_settlement(conn, ranjima)
+    after_h = compute_unified_settlement(conn, highnes)
+    assert after_r.net == before_r
+    assert after_h.net == before_h
+    # PT excluded should reflect the legs
+    assert abs(after_r.passthrough_excluded_net) == Decimal("20000")
+    assert abs(after_h.passthrough_excluded_net) == Decimal("20000")
+
+
+def test_opening_balance_they_owe_you(conn):
+    from expense_tracker.settlement import record_opening_balance
+
+    cid = create_contact(conn, "HighnesOpen", ["highnes_open"])
+    result = record_opening_balance(
+        conn, cid, Decimal("50000"), they_owe_you=True, entry_date="2026-05-01",
+    )
+    bal = compute_unified_settlement(conn, cid)
+    assert bal.net == Decimal("50000")
+    assert bal.status == "owes_you"
+    assert result["direction"] == "you_sent"
+
+
 def test_format_answer(conn):
     cid = int(conn.execute("SELECT id FROM contacts WHERE name = 'Highnes'").fetchone()["id"])
     add_ledger_entry(conn, cid, "you_sent", Decimal("12500"), purpose="loan", entry_date="2026-07-01")
