@@ -880,6 +880,88 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     }
 
 
+def onboarding_status(conn: sqlite3.Connection) -> dict:
+    """Checklist for first-run guidance (P3)."""
+    try:
+        import_count = conn.execute("SELECT count(*) FROM imports").fetchone()[0]
+    except Exception:
+        import_count = 0
+    try:
+        txn_count = conn.execute("SELECT count(*) FROM transactions").fetchone()[0]
+    except Exception:
+        txn_count = 0
+    try:
+        reviewed = conn.execute(
+            "SELECT count(*) FROM classifications WHERE status = 'reviewed'"
+        ).fetchone()[0]
+    except Exception:
+        reviewed = 0
+    try:
+        contact_count = conn.execute("SELECT count(*) FROM contacts").fetchone()[0]
+    except Exception:
+        contact_count = 0
+    try:
+        ledger_count = conn.execute("SELECT count(*) FROM ledger_entries").fetchone()[0]
+    except Exception:
+        ledger_count = 0
+    try:
+        shared_tagged = conn.execute(
+            """
+            SELECT count(*) FROM classifications
+            WHERE expense_type = 'Shared'
+              AND shared_with IS NOT NULL AND shared_with != ''
+            """
+        ).fetchone()[0]
+    except Exception:
+        shared_tagged = 0
+
+    steps = [
+        {
+            "id": "import",
+            "label": "Import an SBI statement",
+            "hint": "Import tab · PDF + password",
+            "done": import_count > 0 or txn_count > 0,
+        },
+        {
+            "id": "review",
+            "label": "Classify at least one transaction",
+            "hint": "Transactions tab · set category & type",
+            "done": reviewed > 0,
+        },
+        {
+            "id": "people",
+            "label": "Have contacts for khata",
+            "hint": "People tab · add or merge contacts",
+            "done": contact_count > 0,
+        },
+        {
+            "id": "ledger",
+            "label": "Record a person balance (loan / entry)",
+            "hint": "People · + Entry or Suggested loans",
+            "done": ledger_count > 0,
+        },
+        {
+            "id": "shared",
+            "label": "Tag a shared expense partner (optional)",
+            "hint": "Transactions · Type Shared · Shared with",
+            "done": shared_tagged > 0,
+        },
+    ]
+    complete = all(s["done"] for s in steps if s["id"] != "shared")
+    return {
+        "complete": complete,
+        "steps": steps,
+        "counts": {
+            "imports": import_count,
+            "transactions": txn_count,
+            "reviewed": reviewed,
+            "contacts": contact_count,
+            "ledger_entries": ledger_count,
+            "shared_tagged": shared_tagged,
+        },
+    }
+
+
 def export_rows(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """

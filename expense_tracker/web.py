@@ -35,6 +35,7 @@ from .db import (
     file_sha256,
     import_transactions,
     init_db,
+    onboarding_status,
     remove_transaction_link,
     review_transaction,
     write_csv,
@@ -52,6 +53,7 @@ from .templates import login_page, page, register_page
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+FRONTEND_DIST = APP_ROOT / "frontend" / "dist"
 OUTPUT_DIR = APP_ROOT / "outputs"
 
 
@@ -132,6 +134,62 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.wfile.flush()
 
+    def serve_frontend(self, request_path: str) -> None:
+        """Serve Vite build from frontend/dist at /app/ (SPA fallback to index.html)."""
+        if not FRONTEND_DIST.is_dir():
+            self.respond_html(
+                b"<!doctype html><html><body style='font-family:system-ui;padding:2rem'>"
+                b"<h1>React app not built</h1>"
+                b"<p>Run <code>cd frontend && npm install && npm run build</code>, then restart.</p>"
+                b"<p><a href='/'>Back to classic UI</a></p></body></html>"
+            )
+            return
+        rel = request_path[len("/app"):].lstrip("/") or "index.html"
+        # Prevent path traversal
+        candidate = (FRONTEND_DIST / rel).resolve()
+        try:
+            candidate.relative_to(FRONTEND_DIST.resolve())
+        except ValueError:
+            self.send_error(404)
+            return
+        if candidate.is_dir():
+            candidate = candidate / "index.html"
+        if not candidate.is_file():
+            candidate = FRONTEND_DIST / "index.html"
+        if not candidate.is_file():
+            self.send_error(404)
+            return
+        suffix = candidate.suffix.lower()
+        ctype = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".woff2": "font/woff2",
+            ".json": "application/json",
+        }.get(suffix, "application/octet-stream")
+        body = candidate.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-cache" if suffix == ".html" else "public, max-age=86400")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+
+    def handle_api_onboarding(self, username: str) -> None:
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                payload = onboarding_status(conn)
+            self.respond_json(payload)
+        except Exception:
+            logger.exception("onboarding API failed")
+            self.respond_json({"error": "Failed to load onboarding"}, status=500)
+
     def multipart(self):
         length = int(self.headers.get("Content-Length", "0"))
         content_type = self.headers.get("Content-Type", "")
@@ -157,6 +215,11 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 return
             elif parsed.path == "/chart.js":
                 self.serve_static("chart.js", "application/javascript; charset=utf-8")
+                return
+
+            # React shell (built assets under frontend/dist)
+            if parsed.path == "/app" or parsed.path.startswith("/app/"):
+                self.serve_frontend(parsed.path)
                 return
 
             # Auth pages
@@ -185,12 +248,16 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/settlement/summary":
                 self.handle_api_settlement_summary(username)
                 return
+            if parsed.path == "/api/onboarding":
+                self.handle_api_onboarding(username)
+                return
 
             if parsed.path == "/":
                 db_path = self._db_path_for(username)
                 all_users = get_all_usernames()
                 with connect(db_path) as conn:
                     data = dashboard_data(conn)
+                    data["onboarding"] = onboarding_status(conn)
                     from .settlement import settlement_usb_enabled, summary_all_contacts, settlement_to_json
 
                     if settlement_usb_enabled():

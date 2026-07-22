@@ -587,18 +587,67 @@
       var tabId = el.getAttribute('data-tab-jump');
       if (!tabId) return;
       e.preventDefault();
-      if (typeof switchTab === 'function') {
-        // switchTab is local — use hash
-      }
       if (history.pushState) {
         history.pushState(null, null, '#' + tabId);
       }
-      // Reuse same logic as nav
       var tab = document.querySelector('.tab-link[data-tab="' + tabId + '"]');
       if (tab) tab.click();
       else window.location.hash = tabId;
+      syncMobileNav(tabId);
     });
   });
+
+  function syncMobileNav(tabId) {
+    document.querySelectorAll('.mobile-bottom-nav .mnav-item[data-tab]').forEach(function (a) {
+      a.classList.toggle('active', a.getAttribute('data-tab') === tabId);
+    });
+  }
+
+  // Highlight mobile nav when desktop tabs change
+  var _origSwitch = null;
+  document.querySelectorAll('.tab-link[data-tab]').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      syncMobileNav(tab.getAttribute('data-tab'));
+    });
+  });
+  syncMobileNav(location.hash ? location.hash.slice(1) : 'dashboard');
+
+  /* ── P3: Home NL settlement question ── */
+  window.askSettlementQuestion = function (event) {
+    if (event) event.preventDefault();
+    var input = document.getElementById('home-nl-input');
+    var out = document.getElementById('home-nl-answer');
+    if (!input || !out) return false;
+    var raw = (input.value || '').trim();
+    if (!raw) return false;
+    var cleaned = raw
+      .replace(/how much (does|do)\s+/i, '')
+      .replace(/\s+owe me\??/i, '')
+      .replace(/\?/g, '')
+      .trim() || raw;
+    out.hidden = false;
+    out.className = 'home-nl-answer';
+    out.textContent = 'Thinking…';
+    fetch('/api/settlement/by-name?q=' + encodeURIComponent(cleaned), {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' }
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok) {
+          out.className = 'home-nl-answer error';
+          out.textContent = result.data.error || 'Could not find that person.';
+          return;
+        }
+        out.className = 'home-nl-answer';
+        out.textContent = result.data.answer || ('Net ₹' + (result.data.net || 0));
+      })
+      .catch(function () {
+        out.className = 'home-nl-answer error';
+        out.textContent = 'Request failed. Are you logged in?';
+      });
+    return false;
+  };
 
   /* ── Contact Ledger Drawer & Modal JS ── */
   window.openAddLedgerModal = function (contactId, contactName) {

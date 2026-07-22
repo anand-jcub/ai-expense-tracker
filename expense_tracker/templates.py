@@ -1279,6 +1279,93 @@ def render_rules(rows) -> str:
     )
 
 
+def render_onboarding_checklist(onboarding: dict | None) -> str:
+    """P3: first-run checklist on Home."""
+    if not onboarding:
+        return ""
+    steps = onboarding.get("steps") or []
+    if not steps:
+        return ""
+    if onboarding.get("complete"):
+        return """
+        <section class="home-strip onboarding-strip onboarding-done" aria-label="Setup complete">
+          <div class="home-strip-header">
+            <h2>Setup complete</h2>
+            <a class="button subtle home-strip-link" href="/app/">Open React app →</a>
+          </div>
+          <p class="empty" style="margin:0;">You can keep using classic UI, or try the new Home &amp; People shell.</p>
+        </section>
+        """
+    items = []
+    done_n = 0
+    for s in steps:
+        done = bool(s.get("done"))
+        if done:
+            done_n += 1
+        cls = "done" if done else ""
+        mark = "✓" if done else ""
+        items.append(
+            f'<li class="onboard-item {cls}"><span class="onboard-check">{mark}</span>'
+            f'<div><strong>{esc(s.get("label"))}</strong>'
+            f'<div class="onboard-hint">{esc(s.get("hint") or "")}</div></div></li>'
+        )
+    return f"""
+    <section class="home-strip onboarding-strip" aria-label="Getting started">
+      <div class="home-strip-header">
+        <h2>Getting started ({done_n}/{len(steps)})</h2>
+        <a class="button subtle home-strip-link" href="/app/">React app →</a>
+      </div>
+      <ul class="onboard-list">{"".join(items)}</ul>
+    </section>
+    """
+
+
+def render_home_nl_box() -> str:
+    """P3: natural-language settlement question on Home (client → API)."""
+    return """
+    <section class="home-strip home-nl" aria-label="Ask about balances">
+      <div class="home-strip-header">
+        <h2>Ask: who owes whom?</h2>
+      </div>
+      <form id="home-nl-form" class="home-nl-form" onsubmit="return askSettlementQuestion(event)">
+        <input id="home-nl-input" type="search" placeholder='e.g. How much does Highnes owe me?'
+               autocomplete="off" aria-label="Settlement question">
+        <button type="submit" class="button">Ask</button>
+      </form>
+      <div id="home-nl-answer" class="home-nl-answer" hidden></div>
+      <p class="empty" style="margin:8px 0 0; font-size:12px;">Uses your People balances (khata + open shared). Never changes data.</p>
+    </section>
+    """
+
+
+def render_mobile_bottom_nav(pending_badge_count: int = 0) -> str:
+    """P3: primary nav for small screens."""
+    badge = (
+        f'<span class="mnav-badge">{pending_badge_count}</span>'
+        if pending_badge_count > 0
+        else ""
+    )
+    return f"""
+    <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
+      <a href="#dashboard" class="mnav-item" data-tab-jump="dashboard" data-tab="dashboard">
+        <span class="mnav-label">Home</span>
+      </a>
+      <a href="#review" class="mnav-item" data-tab-jump="review" data-tab="review">
+        <span class="mnav-label">Txns</span>{badge}
+      </a>
+      <a href="#contacts" class="mnav-item" data-tab-jump="contacts" data-tab="contacts">
+        <span class="mnav-label">People</span>
+      </a>
+      <a href="#import-add" class="mnav-item" data-tab-jump="import-add" data-tab="import-add">
+        <span class="mnav-label">Import</span>
+      </a>
+      <a href="/app/" class="mnav-item mnav-app">
+        <span class="mnav-label">App</span>
+      </a>
+    </nav>
+    """
+
+
 def render_home_attention_strip(
     review_count: int,
     passthrough_count: int,
@@ -1427,10 +1514,20 @@ def page(
         and not (_row_field(r, "shared_with") or _row_field(r, "shared_with_contact_id"))
         and float(_row_field(r, "debit") or 0) > 0
     )
+    # Onboarding from live counts
+    try:
+        from .db import onboarding_status as _onboarding_status
+        # page() has no conn — use data counts if present
+        onboarding = data.get("onboarding")
+    except Exception:
+        onboarding = None
+    home_onboarding_html = render_onboarding_checklist(onboarding)
     home_attention_html = render_home_attention_strip(
         attention_review_count, attention_pt_count, open_shared_null
     )
+    home_nl_html = render_home_nl_box()
     home_settlement_html = render_home_settlement_strip(partner_balances)
+    mobile_nav_html = render_mobile_bottom_nav(pending_badge_count)
     editable_all = [row for row in data["transactions"] if row["status"] != "needs_review"]
     filtered_edit = filter_editable_rows(data["transactions"], edit_search)
     # Show more rows in unified workspace
@@ -1566,7 +1663,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=12">
+  <link rel="stylesheet" href="/style.css?v=13">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1576,6 +1673,7 @@ def page(
       <p>Spend, review, and who-owes-whom — local SBI tracker</p>
     </div>
     <div class="header-right">
+      <a class="button subtle" href="/app/" style="margin-right:8px; text-decoration:none; font-size:13px;">React app</a>
       {user_badge}
       <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle theme">
         <svg class="sun-icon" viewBox="0 0 24 24" style="display:none;"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>
@@ -1629,7 +1727,9 @@ def page(
 
       <!-- Tab 1: Dashboard -->
       <div id="pane-dashboard" class="tab-pane active">
+        {home_onboarding_html}
         {home_attention_html}
+        {home_nl_html}
         {home_settlement_html}
 
         {render_dashboard_filters(start_date, end_date, min_date, max_date, exclude_business, use_my_share)}
@@ -1645,6 +1745,11 @@ def page(
             <span>My expenses</span><strong style="color:var(--error);">{money(period_totals['expense_share'])}</strong>
           </div>
         </div>
+        {f'''<div class="empty-state-panel" style="margin-top:16px;">
+          <strong>No spend data in this period</strong>
+          <p class="empty">Import a statement or widen the date range to see charts.</p>
+          <a class="button" href="#import-add" data-tab-jump="import-add">Go to Import</a>
+        </div>''' if float(period_totals.get('debit') or 0) == 0 and float(period_totals.get('credit') or 0) == 0 else ''}
 
         <div class="grid two" style="margin-top:24px;">
           <section>
@@ -1767,7 +1872,8 @@ def page(
     </main>
   </div>
   
-  <script src="/app.js?v=12"></script>
+  {mobile_nav_html}
+  <script src="/app.js?v=13"></script>
 </body>
 </html>
 """
