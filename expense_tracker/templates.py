@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import urllib.parse
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from .services import (
@@ -283,7 +284,7 @@ def render_contacts_section(
     partner_balances: list[dict] | None = None,
     merge_suggestions: list[dict] | None = None,
 ) -> str:
-    """Rich People (khata) UX: summary metrics, responsive contact cards grid, and tools."""
+    """Simple People (khata) UX: list first, tools secondary."""
     _ = merge_suggestions, partner_balances
     import json as _json
     from datetime import date as _date
@@ -293,82 +294,87 @@ def render_contacts_section(
 
     total_owes_you = Decimal("0")
     total_you_owe = Decimal("0")
-    cards_items: list[dict] = []
+    active_items: list[dict] = []
+    quiet_items: list[dict] = []
 
     for item in contacts:
         bal = item["balance"]
         net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
         if net > 0:
             total_owes_you += net
+            active_items.append(item)
         elif net < 0:
             total_you_owe += abs(net)
-        cards_items.append(item)
+            active_items.append(item)
+        else:
+            quiet_items.append(item)
 
-    cards_items.sort(
+    active_items.sort(
         key=lambda it: abs(Decimal(str(it["balance"].get("net_balance", it["balance"].get("net", 0))))),
         reverse=True,
     )
+    quiet_items.sort(key=lambda it: (it["contact"].get("name") or "").lower())
 
-    colors = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#ec4899", "#06b6d4"]
-
-    def _card(idx: int, item: dict) -> str:
+    def _row(item: dict, *, quiet: bool = False) -> str:
         contact = item["contact"]
         bal = item["balance"]
         cid = contact["id"]
         cname = contact["name"] or "?"
         aliases = contact.get("aliases") or []
         aliases_str = ", ".join(aliases)
+        notes = contact.get("notes") or ""
         net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
-        total_sent = bal.get("total_you_sent", bal.get("total_sent", 0))
-        total_rec = bal.get("total_they_sent", bal.get("total_received", 0))
         entries = int(bal.get("entry_count") or 0)
         js_name = _json.dumps(cname)
-        avatar_bg = colors[idx % len(colors)]
-        initial = cname[0].upper() if cname else "?"
+        js_aliases = _json.dumps(aliases_str)
+        js_notes = _json.dumps(notes)
 
         if net > 0:
             status_code = "owes_you"
-            status_text = f"Owes you {money(net)}"
-            badge_style = "background:rgba(16,185,129,0.12); color:#10b981; border:1px solid rgba(16,185,129,0.3);"
+            line = f"Owes you {money(net)}"
+            amount_cls = "people-amt people-amt-pos"
+            amount_txt = money(net)
         elif net < 0:
             status_code = "you_owe"
-            status_text = f"You owe {money(abs(net))}"
-            badge_style = "background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.3);"
+            line = f"You owe {money(abs(net))}"
+            amount_cls = "people-amt people-amt-neg"
+            amount_txt = money(abs(net))
         else:
             status_code = "settled"
-            status_text = "Settled (₹0)"
-            badge_style = "background:var(--border-color); color:var(--muted);"
+            line = "Settled"
+            amount_cls = "people-amt people-amt-zero"
+            amount_txt = "₹0"
 
-        quiet_flag = "1" if net == 0 else "0"
+        meta = f"{entries} entr{'y' if entries == 1 else 'ies'}"
+        if aliases_str:
+            meta += f" · {esc(aliases_str[:40])}"
 
         return f"""
-        <div class="contact-card people-card" data-name="{esc(cname.lower())}" data-aliases="{esc(aliases_str.lower())}" data-status="{status_code}" data-quiet="{quiet_flag}">
-          <div class="people-card-header">
-            <div class="people-card-identity">
-              <div class="people-avatar" style="background:{avatar_bg};">{esc(initial)}</div>
-              <div class="people-card-titles">
-                <h3 class="people-name">{esc(cname)}</h3>
-                {f'<span class="people-aliases">{esc(aliases_str[:35])}</span>' if aliases_str else f'<span class="people-meta">{entries} entr{"y" if entries == 1 else "ies"}</span>'}
-              </div>
-            </div>
-            <span class="people-badge" style="{badge_style}">{esc(status_text)}</span>
-          </div>
-          <div class="people-card-stats">
-            <div><span>You sent:</span> <strong>{money(total_sent)}</strong></div>
-            <div><span>They sent:</span> <strong>{money(total_rec)}</strong></div>
-          </div>
-          <div class="people-card-actions">
-            <button type="button" class="button subtle" onclick='openLedgerDrawer({cid}, {js_name})'>View Ledger</button>
-            <button type="button" class="button" onclick='openAddLedgerModal({cid}, {js_name})'>+ Entry</button>
+        <div class="people-row contact-card" data-name="{esc(cname.lower())}" data-aliases="{esc(aliases_str.lower())}" data-status="{status_code}" data-quiet="{'1' if quiet else '0'}">
+          <button type="button" class="people-row-main" onclick='openLedgerDrawer({cid}, {js_name})'>
+            <span class="people-avatar" aria-hidden="true">{esc(cname[0].upper())}</span>
+            <span class="people-row-text">
+              <span class="people-name">{esc(cname)}</span>
+              <span class="people-meta">{line} · {meta}</span>
+            </span>
+            <span class="{amount_cls}">{amount_txt}</span>
+          </button>
+          <div class="people-row-actions">
+            <button type="button" class="button subtle" title="Rename / edit aliases"
+                    onclick='openEditContactModal({cid}, {js_name}, {js_aliases}, {js_notes})'>Edit</button>
+            <button type="button" class="button" onclick='openAddLedgerModal({cid}, {js_name})'>+ Money</button>
+            <button type="button" class="button subtle" onclick='openLedgerDrawer({cid}, {js_name})'>History</button>
           </div>
         </div>
         """
 
-    cards_html = "".join(_card(idx, item) for idx, item in enumerate(cards_items)) or (
-        '<p class="empty people-empty">No contacts found. Add a person or log a loan.</p>'
+    active_html = "".join(_row(i) for i in active_items) or (
+        '<p class="empty people-empty">Nobody owes money right now. Add a person or log a loan.</p>'
     )
+    quiet_html = "".join(_row(i, quiet=True) for i in quiet_items)
+    quiet_count = len(quiet_items)
 
-    # Rolling money suggestions
+    # Compact pass-through suggestions (collapsed by default)
     pt_html = ""
     if passthrough_candidates:
         pt_items = []
@@ -416,18 +422,18 @@ def render_contacts_section(
         pt_html = f"""
         <details class="people-tools">
           <summary>Possible rolling money <span class="people-chip">{len(passthrough_candidates[:4])}</span></summary>
-          <p class="empty people-hint">Bank pairs that look like A → you → B. Confirm only if you were just a middle person (does not change net balances).</p>
+          <p class="empty people-hint">Bank pairs that look like A → you → B. Confirm only if you were just a middle person (does not change who owes whom).</p>
           <div class="people-pt-list">{"".join(pt_items)}</div>
         </details>
         """
 
     tools_html = f"""
     <details class="people-tools">
-      <summary>More actions & tools</summary>
+      <summary>More actions</summary>
       <div class="people-tools-grid">
         <div class="people-tool-card">
           <h3>Rolling money</h3>
-          <p class="empty people-hint">Someone sent you money to pass on. Neither person&apos;s net balance changes.</p>
+          <p class="empty people-hint">Someone sent you money to pass on. Neither person&apos;s balance changes.</p>
           <form method="post" action="/ledger/rolling" class="people-simple-form"
                 onsubmit="return confirm('Log rolling money? Balances stay the same.');">
             <label>Received from
@@ -443,7 +449,7 @@ def render_contacts_section(
               <input type="date" name="entry_date" value="{today}">
             </label>
             <label class="people-span">Note
-              <input type="text" name="notes" placeholder="Optional note">
+              <input type="text" name="notes" placeholder="Optional">
             </label>
             <button type="submit" class="button">Save rolling</button>
           </form>
@@ -469,7 +475,7 @@ def render_contacts_section(
               <input type="date" name="entry_date" value="{today}">
             </label>
             <label class="people-span">Note
-              <input type="text" name="notes" placeholder="Optional note">
+              <input type="text" name="notes" placeholder="Optional">
             </label>
             <button type="submit" class="button">Save starting balance</button>
           </form>
@@ -477,6 +483,15 @@ def render_contacts_section(
       </div>
     </details>
     """
+
+    quiet_block = ""
+    if quiet_count:
+        quiet_block = f"""
+        <details class="people-tools people-quiet" id="people-quiet-panel">
+          <summary>Settled / no balance <span class="people-chip">{quiet_count}</span></summary>
+          <div id="contacts-grid-quiet" class="people-list">{quiet_html}</div>
+        </details>
+        """
 
     add_contact_modal = """
     <div id="modal-add-contact" class="people-modal" hidden>
@@ -498,6 +513,36 @@ def render_contacts_section(
           <div class="people-modal-actions">
             <button type="button" class="button subtle" onclick="closePeopleModal('modal-add-contact')">Cancel</button>
             <button type="submit" class="button">Save person</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    """
+
+    edit_contact_modal = """
+    <div id="modal-edit-contact" class="people-modal" hidden>
+      <div class="people-modal-card" role="dialog" aria-labelledby="edit-contact-title">
+        <div class="people-modal-head">
+          <h3 id="edit-contact-title">Edit person</h3>
+          <button type="button" class="button subtle people-modal-close" onclick="closePeopleModal('modal-edit-contact')">✕</button>
+        </div>
+        <form method="post" action="/contacts/edit" class="people-simple-form people-modal-form">
+          <input type="hidden" id="edit-contact-id" name="contact_id">
+          <label class="people-span">Readable name
+            <input name="name" id="edit-contact-name" required placeholder="e.g. Ananthu (friend)">
+          </label>
+          <label class="people-span">Also known as (bank / UPI / phone)
+            <input name="aliases" id="edit-contact-aliases" placeholder="anandu, 98xxxxxxxx, ms ranji">
+          </label>
+          <p class="empty people-hint" style="grid-column:1/-1;margin:0;">
+            Keep bank fragments in “Also known as” so statements still match after you rename.
+          </p>
+          <label class="people-span">Note (optional)
+            <input name="notes" id="edit-contact-notes" placeholder="Friend, roommate…">
+          </label>
+          <div class="people-modal-actions">
+            <button type="button" class="button subtle" onclick="closePeopleModal('modal-edit-contact')">Cancel</button>
+            <button type="submit" class="button">Save name</button>
           </div>
         </form>
       </div>
@@ -569,6 +614,7 @@ def render_contacts_section(
       </div>
 
       <div class="people-drawer-actions">
+        <button type="button" class="button subtle" id="drawer-edit-btn">Edit name</button>
         <button type="button" class="button" id="drawer-add-money-btn">+ Money</button>
         <form method="post" action="/ledger/settle" id="drawer-settle-form" class="people-settle">
           <input type="hidden" id="drawer-settle-contact-id" name="contact_id">
@@ -582,26 +628,26 @@ def render_contacts_section(
     """
 
     return f"""
-    <section class="people-page" aria-label="People balances">
-      <!-- 3 Top Metric Summary Cards -->
-      <div class="grid metrics people-metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:20px;">
-        <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
-          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net Owed to You</span>
-          <strong style="display:block; margin-top:4px; font-size:22px; color:var(--success);">{money(total_owes_you)}</strong>
+    <div class="people-page" aria-label="People balances">
+      <div class="people-header">
+        <div>
+          <h2>People</h2>
+          <p class="people-subtitle">Who owes whom — loans, food splits, and handoffs</p>
         </div>
-        <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
-          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Net You Owe</span>
-          <strong style="display:block; margin-top:4px; font-size:22px; color:var(--error);">{money(total_you_owe)}</strong>
-        </div>
-        <div class="metric" style="background:var(--surface-color); border:1px solid var(--border-color); border-radius:14px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
-          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Active Contacts</span>
-          <strong style="display:block; margin-top:4px; font-size:22px; color:var(--text-color);">{len(contacts)}</strong>
+        <div class="people-totals">
+          <div class="people-total pos">
+            <span>They owe you</span>
+            <strong>{money(total_owes_you)}</strong>
+          </div>
+          <div class="people-total neg">
+            <span>You owe</span>
+            <strong>{money(total_you_owe)}</strong>
+          </div>
         </div>
       </div>
 
-      <!-- People Toolbar -->
       <div class="people-toolbar">
-        <input id="contact-search-input" class="people-search" type="search" placeholder="Search name or handle…" oninput="filterPeopleList()" autocomplete="off">
+        <input id="contact-search-input" class="people-search" type="search" placeholder="Search name…" oninput="filterPeopleList()" autocomplete="off">
         <div class="people-filters" role="group" aria-label="Filter">
           <button type="button" class="people-filter active" data-filter="active" onclick="filterPeopleStatus('active', this)">Balances</button>
           <button type="button" class="people-filter" data-filter="owes_you" onclick="filterPeopleStatus('owes_you', this)">Owes me</button>
@@ -613,17 +659,18 @@ def render_contacts_section(
 
       {pt_html}
 
-      <!-- Contact Cards Grid -->
-      <div id="contacts-grid" class="people-cards-grid">
-        {cards_html}
+      <div id="contacts-grid" class="people-list">
+        {active_html}
       </div>
 
+      {quiet_block}
       {tools_html}
 
       {add_contact_modal}
+      {edit_contact_modal}
       {add_entry_modal}
       {drawer_html}
-    </section>
+    </div>
     """
 
 
@@ -1522,8 +1569,25 @@ def page(
         reverse=True,
     )
     min_date, max_date = date_bounds(data["transactions"])
-    start_date = start_date if start_date else min_date
-    end_date = end_date if end_date else max_date
+    # Default: current calendar month (not full history)
+    if not start_date and not end_date:
+        today = date.today()
+        month_start = today.replace(day=1).isoformat()
+        if today.month == 12:
+            next_month = today.replace(year=today.year + 1, month=1, day=1)
+        else:
+            next_month = today.replace(month=today.month + 1, day=1)
+        month_end = (next_month - timedelta(days=1)).isoformat()
+        start_date = month_start
+        end_date = month_end
+        # Clamp to available data when possible
+        if min_date and start_date < min_date:
+            start_date = min_date
+        if max_date and end_date > max_date:
+            end_date = max_date
+    else:
+        start_date = start_date if start_date else min_date
+        end_date = end_date if end_date else max_date
     period_rows = filter_dashboard_rows(data["transactions"], start_date, end_date, exclude_business)
     period_totals = dashboard_totals(period_rows, use_my_share)
     period_categories = {
@@ -1631,7 +1695,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=25">
+  <link rel="stylesheet" href="/style.css?v=19">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1838,7 +1902,7 @@ def page(
   </div>
   
   {mobile_nav_html}
-  <script src="/app.js?v=25"></script>
+  <script src="/app.js?v=18"></script>
 </body>
 </html>
 """

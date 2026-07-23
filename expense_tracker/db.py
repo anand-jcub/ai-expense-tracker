@@ -310,7 +310,7 @@ def migrate_settlement_schema(conn: sqlite3.Connection) -> None:
         _safe_add_column(conn, "classifications", "shared_with_contact_id", "INTEGER")
         # Backfill shared_with_contact_id where text resolvable
         try:
-            from .settlement import resolve_contact
+            from .contacts import find_contact_by_text
 
             rows = conn.execute(
                 """
@@ -320,11 +320,11 @@ def migrate_settlement_schema(conn: sqlite3.Connection) -> None:
                 """
             ).fetchall()
             for r in rows:
-                match = resolve_contact(conn, r["shared_with"])
+                match = find_contact_by_text(conn, r["shared_with"])
                 if match:
                     conn.execute(
                         "UPDATE classifications SET shared_with_contact_id = ? WHERE transaction_id = ?",
-                        (match["canonical_id"], r["transaction_id"]),
+                        (match["id"], r["transaction_id"]),
                     )
         except Exception as exc:
             logger.debug("shared_with_contact_id backfill skipped: %s", exc)
@@ -364,20 +364,47 @@ def _safe_add_column(conn: sqlite3.Connection, table: str, column: str, col_type
 
 
 def seed_default_contacts(conn: sqlite3.Connection) -> None:
-    from .contacts import create_contact, find_contact_by_text
+    """Idempotent seed for common people. Exact name check only (no fuzzy match).
+
+    Uses INSERT OR IGNORE-style guard so concurrent request threads cannot
+    create duplicate empty cards (name is not UNIQUE on legacy schemas).
+    """
+    import json as _json
+    from .contacts import utc_now, split_aliases
+
+    # NOTE: Anand (app user / you) ≠ Ananthu (a different person).
+    # Never put bare "anand" on Ananthu aliases.
     defaults = [
         ("Highnes", ["highnes", "highnes.7@sibl", "8078866770", "highnesj sibl", "dr highnes sibl"]),
-        ("Ranjima", ["ranjima", "9497760612"]),
-        ("Ananthu", ["ananthu", "anand"]),
+        # Ranji / Ms Ranji (bank text) is the same person as Ranjima
+        ("Ranjima", ["ranjima", "ranji", "ms ranji", "9497760612", "ranjima sbin"]),
+        ("Ananthu", ["ananthu", "anandu", "anandhu", "anandusnai"]),
         ("Bipin", ["bipin"]),
         ("Anupriya", ["anupriya"]),
     ]
     for name, aliases in defaults:
         try:
-            if not find_contact_by_text(conn, name):
-                create_contact(conn, name, aliases)
+            existing = conn.execute(
+                "SELECT id FROM contacts WHERE lower(name) = lower(?) LIMIT 1",
+                (name,),
+            ).fetchone()
+            if existing:
+                continue
+            aliases_json = _json.dumps(split_aliases(aliases))
+            conn.execute(
+                """
+                INSERT INTO contacts (name, aliases_json, notes, created_at)
+                VALUES (?, ?, NULL, ?)
+                """,
+                (name, aliases_json, utc_now()),
+            )
+            conn.commit()
         except Exception:
-            pass
+            # Concurrent insert or legacy constraint — ignore
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
 
 def file_sha256(path: Path) -> str:
@@ -687,11 +714,11 @@ def review_transaction(
     sw_cid = shared_with_contact_id
     if sw_text and sw_cid is None:
         try:
-            from .settlement import resolve_contact
+            from .contacts import find_contact_by_text
 
-            match = resolve_contact(conn, sw_text)
+            match = find_contact_by_text(conn, sw_text)
             if match:
-                sw_cid = int(match["canonical_id"])
+                sw_cid = int(match["id"])
         except Exception:
             pass
     if sw_text or sw_cid:
@@ -839,30 +866,17 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
         "select * from merchant_rules order by updated_at desc, merchant_display"
     ).fetchall()
     from .connections import get_connection_suggestions
-    from .contacts import get_all_contacts, calculate_contact_balance, detect_passthrough_candidates
-    from .settlement import suggest_merge_groups
+    from .contacts import get_all_contacts, get_balance, detect_passthrough_candidates
+
     contacts = get_all_contacts(conn)
     contacts_with_balances = []
     for c in contacts:
-        if c.get("merged_into_id"):
-            continue
-        bal = calculate_contact_balance(conn, c["id"])
+        bal = get_balance(conn, c["id"])
         contacts_with_balances.append({
             "contact": c,
             "balance": bal,
         })
     passthrough_candidates = detect_passthrough_candidates(conn)
-    try:
-        merge_suggestions = suggest_merge_groups(conn)
-    except Exception:
-        logger.exception("merge suggestions failed")
-        merge_suggestions = []
-    try:
-        from .settlement import suggest_loan_posts
-        loan_suggestions = suggest_loan_posts(conn)
-    except Exception:
-        logger.exception("loan suggestions failed")
-        loan_suggestions = []
 
     return {
         "transactions": rows,
@@ -875,8 +889,8 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
         "linkable": get_linkable_transactions(conn),
         "contacts": contacts_with_balances,
         "passthrough_candidates": passthrough_candidates,
-        "merge_suggestions": merge_suggestions,
-        "loan_suggestions": loan_suggestions,
+        "merge_suggestions": [],
+        "loan_suggestions": [],
     }
 
 

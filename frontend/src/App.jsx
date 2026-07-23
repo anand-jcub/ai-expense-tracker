@@ -138,7 +138,7 @@ function PeopleView({ summary, loading }) {
     return (
       <div className="card empty-state">
         <strong>No people yet</strong>
-        Add contacts or import UPI activity, then merge fragments in the classic People tab.
+        Add contacts or import UPI activity, then manage balances in the classic People tab.
         <div style={{ marginTop: 12 }}>
           <a className="btn primary" href="/#contacts">Open classic People</a>
         </div>

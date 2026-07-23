@@ -269,13 +269,35 @@ def active_period_label(start_date: str, end_date: str) -> str:
     return "All transactions"
 
 
+def partner_share_for_row(row) -> Decimal:
+    """Residual after my share on net debit base (single partner)."""
+    debit = Decimal(str(row["debit"] if hasattr(row, "keys") else row.get("debit", 0) or 0))
+    try:
+        offset = Decimal(str(row["debit_offset"] if "debit_offset" in row.keys() else 0 or 0))
+    except Exception:
+        offset = Decimal(str((row.get("debit_offset") if isinstance(row, dict) else 0) or 0))
+    base = max(Decimal("0"), debit - offset)
+    if base <= 0:
+        return Decimal("0.00")
+    try:
+        expense_type = row["expense_type"] if "expense_type" in row.keys() else ""
+    except Exception:
+        expense_type = (row.get("expense_type") if isinstance(row, dict) else "") or ""
+    if expense_type in {"Loan", "Transfer"}:
+        return Decimal("0.00")
+    try:
+        ratio = Decimal(str(row["split_ratio"] if "split_ratio" in row.keys() else 1))
+    except Exception:
+        ratio = Decimal(str((row.get("split_ratio") if isinstance(row, dict) else 1) or 1))
+    if ratio < 1:
+        my = (base * ratio).quantize(Decimal("0.01"))
+    else:
+        my = base.quantize(Decimal("0.01"))
+    return max(Decimal("0"), (base - my).quantize(Decimal("0.01")))
+
+
 def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> list[dict]:
-    """Legacy multi-user partner balances. Prefer settlement.summary_all_contacts when USB is on.
-
-    Uses net_debit residual (debit − offset − my) on a single base — not stored my_share alone.
-    """
-    from .settlement import partner_share_for_row
-
+    """Legacy multi-user shared-expense partner balances (not khata)."""
     results = []
     for partner in all_users:
         if partner.lower() == current_user.lower():
@@ -294,7 +316,7 @@ def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> l
                 """,
                 (partner.lower(), current_user.lower()),
             ).fetchall()
-            they_owe_me = sum(partner_share_for_row(r) for r in rows)
+            they_owe_me = sum((partner_share_for_row(r) for r in rows), Decimal("0"))
 
             partner_rows = conn.execute(
                 """
@@ -308,7 +330,6 @@ def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> l
                 """,
                 (partner.lower(), current_user.lower()),
             ).fetchall()
-            # When partner paid, my_share on their DB is what I owe them
             i_owe_them = sum(
                 (Decimal(str(r["my_share"] or 0)) for r in partner_rows),
                 Decimal("0"),
@@ -329,24 +350,22 @@ def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> l
 
 
 def get_household_balances(conn, current_user: str) -> list[dict]:
-    """Return USB contact nets when available; else empty (legacy always needed all_users)."""
+    """Khata nets for contacts with non-zero balance."""
     try:
-        from .settlement import settlement_usb_enabled, summary_all_contacts
+        from .contacts import get_all_balances
 
-        if settlement_usb_enabled():
-            return [
-                {
-                    "username": b.contact_name,
-                    "they_owe_you": b.they_owe_you,
-                    "you_owe_them": b.you_owe_them,
-                    "net": b.net,
-                }
-                for b in summary_all_contacts(conn)
-                if b.net != 0
-            ]
+        return [
+            {
+                "username": item["contact"]["name"],
+                "they_owe_you": item["balance"]["they_owe_you"],
+                "you_owe_them": item["balance"]["you_owe_them"],
+                "net": item["balance"]["net"],
+            }
+            for item in get_all_balances(conn)
+            if item["balance"]["net"] != 0
+        ]
     except Exception:
-        pass
-    return []
+        return []
 
 
 def credits_by_category(rows) -> list[tuple[str, Decimal]]:

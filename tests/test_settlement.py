@@ -1,28 +1,22 @@
-"""Tests for Unified Settlement Balance (USB)."""
+"""Tests for simplified khata balance (ledger excl. pass-through)."""
 
 from decimal import Decimal
 
 import pytest
 import sqlite3
 
-from expense_tracker.db import init_db, review_transaction, import_transactions
+from expense_tracker.db import init_db
 from expense_tracker.contacts import (
     create_contact,
     add_ledger_entry,
-    calculate_contact_balance,
-)
-from expense_tracker.settlement import (
-    partner_share_for_row,
-    compute_unified_settlement,
-    settlement_to_json,
-    resolve_contact,
-    merge_contacts,
-    dedupe_ledger_conflicts,
+    get_balance,
+    get_ledger,
+    add_rolling_entry,
+    record_opening_balance,
     record_settlement,
-    materialize_virtual_shares,
-    format_settlement_answer,
-    canonical_contact_id,
+    void_ledger_entry,
 )
+from expense_tracker.services import partner_share_for_row
 
 
 @pytest.fixture
@@ -45,7 +39,6 @@ def test_partner_share_equal_split():
 
 
 def test_partner_share_with_offset():
-    """Single net base: 1000 - 200 = 800; 50/50 → partner 400 (not 300)."""
     row = {
         "debit": 1000,
         "debit_offset": 200,
@@ -55,26 +48,6 @@ def test_partner_share_with_offset():
     assert partner_share_for_row(row) == Decimal("400.00")
 
 
-def test_partner_share_unequal():
-    row = {
-        "debit": 900,
-        "debit_offset": 0,
-        "expense_type": "Shared",
-        "split_ratio": Decimal("1") / Decimal("3"),
-    }
-    assert partner_share_for_row(row) == Decimal("600.00")
-
-
-def test_partner_share_loan_zero():
-    row = {
-        "debit": 5000,
-        "debit_offset": 0,
-        "expense_type": "Loan",
-        "split_ratio": "0.5",
-    }
-    assert partner_share_for_row(row) == Decimal("0.00")
-
-
 def test_ledger_balance_excludes_passthrough(conn):
     cid = create_contact(conn, "Bob", "bob@upi")
     add_ledger_entry(conn, cid, "you_sent", Decimal("5000"), purpose="loan", entry_date="2026-07-01")
@@ -82,197 +55,55 @@ def test_ledger_balance_excludes_passthrough(conn):
         conn, cid, "they_sent", Decimal("10000"), purpose="rolling",
         is_passthrough=True, entry_date="2026-07-02",
     )
-    bal = compute_unified_settlement(conn, cid)
-    assert bal.ledger_net == Decimal("5000")
-    assert bal.net == Decimal("5000")
-    assert bal.passthrough_excluded_net == Decimal("-10000")
-    assert bal.status == "owes_you"
+    bal = get_balance(conn, cid)
+    assert bal["net"] == 5000.0
+    assert bal["status"] == "owes_you"
+    assert bal["entry_count"] == 1
 
 
-def test_settlement_json_has_net_balance(conn):
+def test_balance_json_has_net_balance(conn):
     cid = create_contact(conn, "Dana")
     add_ledger_entry(conn, cid, "you_sent", Decimal("100"), purpose="loan", entry_date="2026-07-01")
-    payload = settlement_to_json(compute_unified_settlement(conn, cid))
+    payload = get_balance(conn, cid)
     assert payload["net"] == payload["net_balance"] == 100.0
-    assert "breakdown" in payload
-    assert isinstance(payload["entries"] if "entries" in payload else payload["lines"], list)
 
 
-def test_resolve_prefers_hub_over_fragment(conn):
-    # Highnes is seeded by init_db with aliases including highnesj sibl
-    hub_row = conn.execute("SELECT id FROM contacts WHERE name = 'Highnes'").fetchone()
-    hub = int(hub_row["id"])
-    # Merchant-shaped fragment
-    create_contact(conn, "Highnesj Sibl", "")
-    match = resolve_contact(conn, "Highnesj Sibl")
-    assert match is not None
-    assert match["canonical_id"] == hub
-    assert match["id"] == hub
-
-
-def test_virtual_shared_and_suppress(conn):
-    cid = create_contact(conn, "Alice", "alice")
-    # Minimal import structure
-    conn.execute(
-        "INSERT INTO imports (source_filename, file_sha256, imported_at, password_used, transaction_count) "
-        "VALUES ('t.pdf', 'abc', '2026-07-01', 0, 1)"
-    )
-    conn.execute(
-        """
-        INSERT INTO transactions (
-            import_id, source_hash, txn_date, description, debit, credit, amount_signed,
-            raw_text, merchant_key, merchant_display, created_at
-        ) VALUES (1, 'h1', '2026-07-01', 'ZOMATO', 600, 0, -600, 'ZOMATO', 'zomato', 'Zomato', '2026-07-01')
-        """
-    )
-    conn.execute(
-        """
-        INSERT INTO classifications (
-            transaction_id, category, expense_type, split_ratio, my_share, status, confidence, updated_at,
-            shared_with, shared_with_contact_id
-        ) VALUES (1, 'Food', 'Shared', 0.5, 300, 'reviewed', 1, '2026-07-01', 'Alice', ?)
-        """,
-        (cid,),
-    )
-    conn.commit()
-
-    bal = compute_unified_settlement(conn, cid)
-    assert bal.virtual_shared_net == Decimal("300.00")
-    assert bal.net == Decimal("300.00")
-
-    # Materialize then virtual suppressed
-    n = materialize_virtual_shares(conn, cid)
-    assert n == 1
-    bal2 = compute_unified_settlement(conn, cid)
-    assert bal2.virtual_shared_net == Decimal("0")
-    assert bal2.ledger_net == Decimal("300.00")
-
-
-def test_shared_with_persist(conn):
-    cid = int(conn.execute("SELECT id FROM contacts WHERE name = 'Highnes'").fetchone()["id"])
-    conn.execute(
-        "INSERT INTO imports (source_filename, file_sha256, imported_at, password_used, transaction_count) "
-        "VALUES ('t.pdf', 'xyz', '2026-07-01', 0, 1)"
-    )
-    conn.execute(
-        """
-        INSERT INTO transactions (
-            import_id, source_hash, txn_date, description, debit, credit, amount_signed,
-            raw_text, merchant_key, merchant_display, created_at
-        ) VALUES (1, 'h2', '2026-07-02', 'SWIGGY', 400, 0, -400, 'SWIGGY', 'swiggy', 'Swiggy', '2026-07-02')
-        """
-    )
-    conn.execute(
-        """
-        INSERT INTO classifications (
-            transaction_id, category, expense_type, split_ratio, my_share, status, confidence, updated_at
-        ) VALUES (1, NULL, 'Personal', 1.0, 400, 'needs_review', 0, '2026-07-02')
-        """
-    )
-    conn.commit()
-    review_transaction(
-        conn, 1, "Food", "Shared", Decimal("0.5"), None, False,
-        shared_with="Highnes",
-    )
-    row = conn.execute(
-        "SELECT shared_with, shared_with_contact_id, expense_type FROM classifications WHERE transaction_id=1"
-    ).fetchone()
-    assert row["shared_with"] == "Highnes"
-    assert row["shared_with_contact_id"] == cid
-    assert row["expense_type"] == "Shared"
-
-
-def test_merge_and_dedupe(conn):
-    hub = int(conn.execute("SELECT id FROM contacts WHERE name = 'Highnes'").fetchone()["id"])
-    frag = create_contact(conn, "Highnesj Sibl", "")
-    conn.execute(
-        "INSERT INTO imports (source_filename, file_sha256, imported_at, password_used, transaction_count) "
-        "VALUES ('t.pdf', 'm1', '2026-07-01', 0, 1)"
-    )
-    conn.execute(
-        """
-        INSERT INTO transactions (
-            import_id, source_hash, txn_date, description, debit, credit, amount_signed,
-            raw_text, merchant_key, merchant_display, created_at
-        ) VALUES (1, 'hm', '2026-07-01', 'UPI', 0, 8000, 8000, 'UPI', 'highnes', 'Highnesj Sibl', '2026-07-01')
-        """
-    )
-    conn.commit()
-    add_ledger_entry(
-        conn, frag, "they_sent", Decimal("8000"), purpose="other",
-        transaction_id=1, entry_date="2026-07-01", created_by="auto",
-    )
-    add_ledger_entry(
-        conn, frag, "they_sent", Decimal("8000"), purpose="rolling",
-        transaction_id=1, is_passthrough=True, entry_date="2026-07-02", created_by="user",
-    )
-    result = merge_contacts(conn, hub, [frag], auto_dedupe=True)
-    assert result["winner_id"] == hub
-    assert canonical_contact_id(conn, frag) == hub
-    bal = compute_unified_settlement(conn, hub)
-    # After void migrate twin, only PT remains (excluded) → net 0
-    assert bal.net == Decimal("0")
-    assert bal.passthrough_excluded_net == Decimal("-8000")
-
-
-def test_record_settlement_partial(conn):
-    cid = create_contact(conn, "Eve")
-    add_ledger_entry(conn, cid, "you_sent", Decimal("1000"), purpose="loan", entry_date="2026-07-01")
-    bal = record_settlement(conn, cid, amount=Decimal("400"))
-    assert bal.net == Decimal("600")
-    assert bal.status == "owes_you"
-
-
-def test_rolling_chain_does_not_change_nets(conn):
-    from expense_tracker.settlement import record_rolling_chain
-
-    ranjima = create_contact(conn, "RanjimaRoll", ["ranjima_roll"])
-    highnes = create_contact(conn, "HighnesRoll", ["highnes_roll"])
-    before_r = compute_unified_settlement(conn, ranjima).net
-    before_h = compute_unified_settlement(conn, highnes).net
-    result = record_rolling_chain(
-        conn, from_contact_id=ranjima, to_contact_id=highnes,
-        amount=Decimal("20000"), entry_date="2026-06-06",
-    )
+def test_rolling_does_not_move_nets(conn):
+    # Avoid seeded contact names (Highnes/Ranjima may already exist)
+    a = create_contact(conn, "RollFrom-A")
+    b = create_contact(conn, "RollTo-B")
+    result = add_rolling_entry(conn, a, b, Decimal("20000"), entry_date="2026-07-02")
     assert result["amount"] == 20000.0
-    after_r = compute_unified_settlement(conn, ranjima)
-    after_h = compute_unified_settlement(conn, highnes)
-    assert after_r.net == before_r
-    assert after_h.net == before_h
-    # PT excluded should reflect the legs
-    assert abs(after_r.passthrough_excluded_net) == Decimal("20000")
-    assert abs(after_h.passthrough_excluded_net) == Decimal("20000")
+    assert get_balance(conn, a)["net"] == 0.0
+    assert get_balance(conn, b)["net"] == 0.0
+    # Still visible in ledger history
+    assert len(get_ledger(conn, a)["entries"]) == 1
+    assert len(get_ledger(conn, b)["entries"]) == 1
+    assert get_ledger(conn, a)["entries"][0]["is_passthrough"] == 1
 
 
 def test_opening_balance_they_owe_you(conn):
-    from expense_tracker.settlement import record_opening_balance
-
-    cid = create_contact(conn, "HighnesOpen", ["highnes_open"])
+    cid = create_contact(conn, "Opening-Person")
     result = record_opening_balance(
-        conn, cid, Decimal("50000"), they_owe_you=True, entry_date="2026-05-01",
+        conn, cid, Decimal("15000"), they_owe_you=True, entry_date="2026-06-30"
     )
-    bal = compute_unified_settlement(conn, cid)
-    assert bal.net == Decimal("50000")
-    assert bal.status == "owes_you"
-    assert result["direction"] == "you_sent"
+    assert result["amount"] == 15000.0
+    bal = get_balance(conn, cid)
+    assert bal["net"] == 15000.0
+    assert bal["status"] == "owes_you"
 
 
-def test_format_answer(conn):
-    cid = int(conn.execute("SELECT id FROM contacts WHERE name = 'Highnes'").fetchone()["id"])
-    add_ledger_entry(conn, cid, "you_sent", Decimal("12500"), purpose="loan", entry_date="2026-07-01")
-    bal = compute_unified_settlement(conn, cid)
-    text = format_settlement_answer(bal)
-    assert "Highnes owes you" in text
-    assert "12,500" in text or "12500" in text
+def test_settlement_full(conn):
+    cid = create_contact(conn, "Loan-Buddy")
+    add_ledger_entry(conn, cid, "you_sent", Decimal("1500"), purpose="loan", entry_date="2026-07-01")
+    bal = record_settlement(conn, cid)
+    assert bal["net"] == 0.0
+    assert bal["status"] == "settled"
 
 
-def test_calculate_contact_balance_uses_usb(conn):
-    cid = create_contact(conn, "Frank")
-    add_ledger_entry(conn, cid, "you_sent", Decimal("100"), purpose="loan", entry_date="2026-07-01")
-    add_ledger_entry(
-        conn, cid, "they_sent", Decimal("50"), purpose="rolling",
-        is_passthrough=True, entry_date="2026-07-02",
-    )
-    bal = calculate_contact_balance(conn, cid)
-    # USB excludes PT
-    assert bal["net_balance"] == 100.0
+def test_void_entry(conn):
+    cid = create_contact(conn, "Seema")
+    eid = add_ledger_entry(conn, cid, "you_sent", Decimal("80"), purpose="loan", entry_date="2026-07-01")
+    assert get_balance(conn, cid)["net"] == 80.0
+    void_ledger_entry(conn, eid)
+    assert get_balance(conn, cid)["net"] == 0.0

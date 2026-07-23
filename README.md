@@ -2,12 +2,14 @@
 
 This is a local-first Phase 1 system for importing weekly password-protected SBI statement PDFs, extracting transactions, learning merchant categorization rules, asking for confirmation on unknown transactions, and showing a spending dashboard.
 
-## Run
+## Run (recommended — stays up)
 
-Use the bundled Codex Python runtime:
+From the project folder, use the watchdog launcher so the app **auto-restarts**
+if it crashes, and survives after the terminal closes:
 
 ```powershell
-& 'C:\Users\User\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' app.py
+cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
+.\start.ps1
 ```
 
 Then open:
@@ -15,6 +17,14 @@ Then open:
 ```text
 http://127.0.0.1:8765
 ```
+
+| Script | Purpose |
+|--------|---------|
+| `.\start.ps1` | Start (or no-op if already up) |
+| `.\stop.ps1` | Stop server + watchdog |
+| `.\restart.ps1` | Bounce cleanly |
+
+One-shot (no auto-restart): `.\venv\Scripts\python.exe app.py`
 
 ## What Phase 1 Supports
 

@@ -28,3 +28,9 @@ Thumbs.db
 chunks_*.txt
 Users/
 
+
+# Server process state
+server.pid
+watchdog.pid
+watchdog.lock
+

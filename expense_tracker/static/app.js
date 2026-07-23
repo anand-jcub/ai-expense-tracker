@@ -39,11 +39,20 @@
     // Store active tab
     sessionStorage.setItem('_active_tab', tabId);
 
-    // Update URL hash without jumping/scrolling
+    // Update URL hash without jumping/scrolling into content under the fixed header
     if (history.pushState) {
       history.pushState(null, null, '#' + tabId);
     } else {
       location.hash = '#' + tabId;
+    }
+
+    // Always start tabs below the fixed "Personal Expense Tracker" header
+    try {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    } catch (err) {
+      window.scrollTo(0, 0);
     }
     
     // Redraw charts when switching to the dashboard tab so they size correctly
@@ -675,6 +684,21 @@
     openPeopleModal('modal-add-ledger');
   };
 
+  window.openEditContactModal = function (contactId, contactName, aliases, notes) {
+    var idEl = document.getElementById('edit-contact-id');
+    var nameEl = document.getElementById('edit-contact-name');
+    var aliasEl = document.getElementById('edit-contact-aliases');
+    var notesEl = document.getElementById('edit-contact-notes');
+    if (idEl) idEl.value = contactId;
+    if (nameEl) {
+      nameEl.value = contactName || '';
+      try { nameEl.focus(); nameEl.select(); } catch (err) { /* ignore */ }
+    }
+    if (aliasEl) aliasEl.value = aliases || '';
+    if (notesEl) notesEl.value = notes || '';
+    openPeopleModal('modal-edit-contact');
+  };
+
   window.closeLedgerDrawer = function () {
     var drawer = document.getElementById('ledger-drawer');
     var backdrop = document.getElementById('ledger-drawer-backdrop');
@@ -693,7 +717,7 @@
     var input = document.getElementById('contact-search-input');
     var query = input ? input.value.toLowerCase().trim() : '';
     var status = window._peopleStatusFilter || 'active';
-    var rows = document.querySelectorAll('.contact-card');
+    var rows = document.querySelectorAll('.people-row.contact-card');
     rows.forEach(function (row) {
       var rowStatus = row.getAttribute('data-status') || '';
       var quiet = row.getAttribute('data-quiet') === '1';
@@ -702,7 +726,7 @@
       else if (status === 'all') statusOk = true;
       else statusOk = rowStatus === status;
       var show = statusOk && peopleQueryMatch(row, query);
-      row.style.display = show ? '' : 'none';
+      row.style.display = show ? 'flex' : 'none';
     });
     // When searching everyone or "all", open quiet panel so settled rows are reachable
     var quietPanel = document.getElementById('people-quiet-panel');
@@ -772,7 +796,6 @@
         openAddLedgerModal(contactId, contactName);
       };
     }
-
     var listEl = document.getElementById('drawer-entries-list');
     var summaryEl = document.getElementById('drawer-balance-summary');
     listEl.innerHTML = '<p class="empty">Loading…</p>';
@@ -787,9 +810,21 @@
         }
 
         var bal = data.balance || {};
+        var contact = data.contact || {};
         var entries = Array.isArray(data.entries) ? data.entries : [];
         var net = (bal.net_balance != null ? bal.net_balance : bal.net) || 0;
         window._drawerSettleNet = net;
+
+        var editBtn = document.getElementById('drawer-edit-btn');
+        if (editBtn) {
+          var displayName = contact.name || contactName || '';
+          var aliasesList = contact.aliases || [];
+          var aliasesStr = Array.isArray(aliasesList) ? aliasesList.join(', ') : String(aliasesList || '');
+          var notesStr = contact.notes || '';
+          editBtn.onclick = function () {
+            openEditContactModal(contactId, displayName, aliasesStr, notesStr);
+          };
+        }
         if (settleAmt) {
           settleAmt.placeholder = Math.abs(net) > 0
             ? ('Full ₹' + Math.abs(net).toLocaleString('en-IN'))
@@ -821,16 +856,15 @@
           var isYou = e.direction === 'you_sent' || e.entry_type === 'you_sent';
           var isPt = !!e.is_passthrough;
           var amtCls = isYou ? 'pos' : 'neg';
-          var arrow = isYou ? '↗ ' : '↘ ';
           var prefix = isYou ? '+' : '−';
           var label = purposeLabel(e.purpose, isPt, e.is_opening_balance);
           var note = e.notes ? (' · ' + e.notes) : '';
           var run = (e.running_balance != null && !isPt)
-            ? ('Balance: ₹' + Number(e.running_balance).toLocaleString('en-IN'))
-            : (isPt ? 'Pass-through' : '');
+            ? ('Balance after: ₹' + Number(e.running_balance).toLocaleString('en-IN'))
+            : (isPt ? 'Does not change balance' : '');
           html += '<div class="people-hist-row' + (isPt ? ' is-pt' : '') + '" data-direction="' + (isYou ? 'you_sent' : 'they_sent') + '">' +
             '<div class="people-hist-date">' + (e.entry_date || '') + '</div>' +
-            '<div class="people-hist-desc"><strong>' + arrow + label + '</strong><span>' +
+            '<div class="people-hist-desc"><strong>' + label + '</strong><span>' +
             (isYou ? 'You paid' : 'They paid') + note + '</span></div>' +
             '<div class="people-hist-amt ' + amtCls + '">' + prefix + '₹' +
             Number(e.amount || 0).toLocaleString('en-IN') + '</div>' +
@@ -850,5 +884,44 @@
     modal.addEventListener('click', function (e) {
       if (e.target === modal) modal.hidden = true;
     });
+  });
+
+  function isPeopleOverlayOpen(el) {
+    return !!(el && !el.hidden && el.style.display !== 'none');
+  }
+
+  /** Esc closes Money/New person first, then History — back to People list. */
+  window.closePeopleOverlays = function () {
+    var money = document.getElementById('modal-add-ledger');
+    var contact = document.getElementById('modal-add-contact');
+    var drawer = document.getElementById('ledger-drawer');
+
+    if (isPeopleOverlayOpen(money)) {
+      closePeopleModal('modal-add-ledger');
+      return true;
+    }
+    var edit = document.getElementById('modal-edit-contact');
+    if (isPeopleOverlayOpen(edit)) {
+      closePeopleModal('modal-edit-contact');
+      return true;
+    }
+    if (isPeopleOverlayOpen(contact)) {
+      closePeopleModal('modal-add-contact');
+      return true;
+    }
+    if (isPeopleOverlayOpen(drawer)) {
+      closeLedgerDrawer();
+      return true;
+    }
+    return false;
+  };
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' && e.key !== 'Esc') return;
+    // Don't steal Esc from native dialogs / open <details> only — close our overlays
+    if (window.closePeopleOverlays()) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
   });
 })();
