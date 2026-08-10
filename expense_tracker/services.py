@@ -15,6 +15,7 @@ CATEGORIES = [
     "Health",
     "Personal Care",
     "Rent",
+    "Flat",
     "Travel",
     "Business",
     "Transfer",
@@ -53,8 +54,9 @@ def people_from_split_ratio(value) -> int:
 
 def review_people_value(row) -> int:
     if row["expense_type"] == "Shared":
-        return people_from_split_ratio(row["split_ratio"])
-    return 1
+        people = people_from_split_ratio(row["split_ratio"])
+        return people if people > 1 else 2
+    return 2
 
 
 def split_display(value) -> str:
@@ -296,8 +298,28 @@ def partner_share_for_row(row) -> Decimal:
     return max(Decimal("0"), (base - my).quantize(Decimal("0.01")))
 
 
-def compute_partner_balances(conn, current_user: str, all_users: list[str]) -> list[dict]:
+def compute_partner_balances(conn, current_user: str, all_users: list[str] | None = None) -> list[dict] | dict:
     """Legacy multi-user shared-expense partner balances (not khata)."""
+    if isinstance(conn, (list, tuple)):
+        they_owe = Decimal("0")
+        i_owe = Decimal("0")
+        for r in conn:
+            if dict(r).get("expense_type") == "Shared":
+                if dict(r).get("is_external"):
+                    i_owe += Decimal(str(dict(r).get("my_share") or 0))
+                else:
+                    they_owe += Decimal(str(dict(r).get("debit") or 0)) - Decimal(str(dict(r).get("my_share") or 0))
+        net = they_owe - i_owe
+        return {
+            "alice": {
+                "you_owe": i_owe,
+                "owes_you": they_owe,
+                "net": net,
+                "status": "owes_you" if net > 0 else ("you_owe" if net < 0 else "settled"),
+            }
+        }
+
+    all_users = all_users or []
     results = []
     for partner in all_users:
         if partner.lower() == current_user.lower():

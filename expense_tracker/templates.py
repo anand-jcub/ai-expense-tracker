@@ -223,46 +223,148 @@ def render_manual_transaction_form() -> str:
     """
 
 
-def render_money_flows_view(transactions: list[dict]) -> str:
-    # Filter for transfers and loans
-    money_flows = [t for t in transactions if t['expense_type'] in ('Transfer', 'Loan')]
+def render_recent_imports_view(recent_imports: list) -> str:
+    if not recent_imports:
+        return """
+        <div style="padding:30px; text-align:center; background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px;">
+            <p class="empty" style="margin:0;">No statements uploaded yet.</p>
+        </div>
+        """
     
-    if not money_flows:
-        return '<p class="empty">No money flow data available (Transfers & Loans).</p>'
+    rows_html = []
+    for imp in recent_imports:
+        fname = esc(imp["source_filename"] or "Statement")
+        raw_date = str(imp["imported_at"] or "")
+        dt_display = raw_date.split("T")[0] if "T" in raw_date else raw_date[:10]
+        time_display = raw_date.split("T")[1][:5] if "T" in raw_date and len(raw_date.split("T")[1]) >= 5 else ""
+        date_str = f"{dt_display} {time_display}".strip()
+        count = imp["transaction_count"] or 0
+        pwd = "🔒 Password protected" if imp["password_used"] else "📄 Plain import"
         
-    items_html = []
-    for f in money_flows[:40]:
-        date_str = f["txn_date"]
-        merchant = f["merchant_display"]
-        amount = f["amount_signed"]
-        desc = f["description"]
-        category = f["category"]
-        expense_type = f["expense_type"]
+        badge_class = "success" if count > 0 else "muted"
         
-        flow_class = "credit-flow" if amount > 0 else "debit-flow"
-        cat_badge_html = f'<span class="rel-row-badge rel-cat">{esc(category)}</span>' if category else ""
-        
-        items_html.append(
+        rows_html.append(
             f"""
-            <div class="timeline-node {flow_class}" style="margin-bottom:12px; padding:12px; border-left:4px solid {'var(--success)' if amount > 0 else 'var(--error)'}; background:var(--surface-color); border-radius:4px;">
-              <div class="node-date" style="font-size:12px; color:var(--muted);">{esc(date_str)}</div>
-              <div class="node-content" style="display:flex; justify-content:space-between; align-items:center;">
-                <div class="node-title">
-                  <strong style="display:block; margin-top:4px;">{esc(merchant)}</strong>
-                  <span style="font-size:12px; color:var(--muted);">{esc(desc)}</span>
-                </div>
-                <div class="node-amount" style="font-weight:600; color:{'var(--success)' if amount > 0 else 'var(--error)'};">
-                  {money(amount)}
-                </div>
+            <div class="log-row" style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--border-color); transition:background 0.2s ease;">
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                  <strong style="color:var(--text); font-size:14px;">{fname}</strong>
+                  <span style="color:var(--muted); font-size:12px;">{esc(date_str)}</span>
               </div>
-              <div class="node-meta" style="margin-top:8px;">
-                {cat_badge_html} <span class="rel-row-badge rel-type" style="margin-left:8px; font-size:11px; background:var(--border-color); padding:2px 6px; border-radius:4px;">{esc(expense_type)}</span>
+              <div style="display:flex; align-items:center; gap:16px;">
+                  <span style="font-size:12px; padding:4px 10px; border-radius:12px; background:rgba(255,255,255,0.04); color:var(--muted); border:1px solid rgba(255,255,255,0.1);">{pwd}</span>
+                  <span class="badge {badge_class}" style="font-weight:600; min-width:60px; text-align:center;">{count} txns</span>
               </div>
             </div>
             """
         )
         
-    return f'<div class="timeline" style="margin-top:16px;">{"".join(items_html)}</div>'
+    return f"""
+    <style>
+      .log-row:hover {{ background: rgba(255, 255, 255, 0.02); }}
+      .log-row:last-child {{ border-bottom: none !important; }}
+    </style>
+    <div style="overflow-x:auto; max-height:300px; overflow-y:auto; background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+        <div style="display:flex; flex-direction:column;">
+          {"".join(rows_html)}
+        </div>
+    </div>
+    """
+
+
+def render_money_flows_view(transactions: list[dict]) -> str:
+    # Filter for Transfer and Loan categories/expense_types
+    flow_txns = [
+        t for t in transactions
+        if dict(t).get("category") in ("Transfer", "Loan") or dict(t).get("expense_type") in ("Transfer", "Loan")
+    ]
+    
+    if not flow_txns:
+        return """
+        <div style="padding:40px; text-align:center; background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; margin-bottom:24px;">
+            <div style="font-size:32px; margin-bottom:12px;">💸</div>
+            <h3 style="margin:0 0 8px 0; color:var(--text);">No Money Flow Data</h3>
+            <p class="empty" style="margin:0;">We couldn't find any recent Transfers or Loans. Upload a statement or classify some transactions as Transfer/Loan to see them here.</p>
+        </div>
+        """
+        
+    total_inflow = Decimal("0")
+    total_outflow = Decimal("0")
+    
+    items_html = []
+    for f in flow_txns[:50]:
+        date_str = f["txn_date"]
+        merchant = f["merchant_display"] or "Unknown"
+        amount = Decimal(str(f["amount_signed"] or 0))
+        debit = Decimal(str(f["debit"] or 0))
+        credit = Decimal(str(f["credit"] or 0))
+        desc = f["description"] or ""
+        category = dict(f).get("category") or ""
+        expense_type = dict(f).get("expense_type") or "Personal"
+        
+        if credit > 0:
+            total_inflow += credit
+        if debit > 0:
+            total_outflow += debit
+            
+        is_inflow = credit > 0 or amount > 0
+        flow_label = "↙ Credit (Inflow)" if is_inflow else "↗ Debit (Outflow)"
+        flow_color = "var(--success)" if is_inflow else "var(--error)"
+        flow_bg = "rgba(16, 185, 129, 0.1)" if is_inflow else "rgba(239, 68, 68, 0.1)"
+        cat_badge_html = f'<span style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); padding:4px 10px; border-radius:6px; font-size:12px; color:var(--text); box-shadow: 0 2px 4px rgba(0,0,0,0.2);">{esc(category)}</span>' if category else ""
+        
+        display_amount = f"+{money(credit)}" if is_inflow else f"-{money(debit)}"
+        
+        items_html.append(
+            f"""
+            <div class="money-flow-card" style="margin-bottom:16px; padding:16px 20px; border-left:4px solid {flow_color}; background:var(--surface-color); border-radius:10px; border-top:1px solid var(--border-color); border-right:1px solid var(--border-color); border-bottom:1px solid var(--border-color); box-shadow: 0 4px 16px rgba(0,0,0,0.15); transition: transform 0.2s ease, box-shadow 0.2s ease; display:flex; justify-content:space-between; align-items:center;">
+              <div style="flex:1;">
+                <div style="font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">{esc(date_str)}</div>
+                <strong style="display:block; font-size:16px; color:var(--text); letter-spacing:0.3px;">{esc(merchant)}</strong>
+                <div style="font-size:13px; color:var(--muted); margin-top:4px; max-width:80%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{esc(desc)}</div>
+                <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+                  {cat_badge_html}
+                  <span style="font-size:12px; padding:4px 10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); color:var(--muted);">{esc(expense_type)}</span>
+                </div>
+              </div>
+              <div style="text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
+                <span style="font-size:11px; padding:4px 10px; border-radius:12px; background:{flow_bg}; color:{flow_color}; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;">{flow_label}</span>
+                <div style="font-weight:800; font-size:22px; margin-top:10px; color:{flow_color};">
+                  {display_amount}
+                </div>
+              </div>
+            </div>
+            """
+        )
+        
+    net_transfer = total_inflow - total_outflow
+    net_color = "var(--success)" if net_transfer >= 0 else "var(--error)"
+    
+    summary_bar = f"""
+    <style>
+      .money-flow-card:hover {{ transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); }}
+      .summary-stat-box {{ flex:1; min-width:180px; background:var(--surface-color); padding:20px; border-radius:12px; border:1px solid rgba(255,255,255,0.05); position:relative; overflow:hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
+      .summary-stat-box::before {{ content:''; position:absolute; top:0; left:0; width:100%; height:4px; }}
+    </style>
+    <div style="display:flex; gap:20px; margin-bottom:24px; flex-wrap:wrap;">
+      <div class="summary-stat-box" style="background: linear-gradient(145deg, rgba(30,30,30,1) 0%, rgba(40,40,40,1) 100%);">
+        <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:var(--success);"></div>
+        <div style="font-size:13px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Total Inflow (Credits)</div>
+        <div style="font-size:28px; font-weight:800; color:var(--success); margin-top:8px; text-shadow: 0 2px 10px rgba(16, 185, 129, 0.2);">+{money(total_inflow)}</div>
+      </div>
+      <div class="summary-stat-box" style="background: linear-gradient(145deg, rgba(30,30,30,1) 0%, rgba(40,40,40,1) 100%);">
+        <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:var(--error);"></div>
+        <div style="font-size:13px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Total Outflow (Debits)</div>
+        <div style="font-size:28px; font-weight:800; color:var(--error); margin-top:8px; text-shadow: 0 2px 10px rgba(239, 68, 68, 0.2);">-{money(total_outflow)}</div>
+      </div>
+      <div class="summary-stat-box" style="background: linear-gradient(145deg, rgba(30,30,30,1) 0%, rgba(40,40,40,1) 100%);">
+        <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:{net_color};"></div>
+        <div style="font-size:13px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Net Cash Flow</div>
+        <div style="font-size:28px; font-weight:800; color:{net_color}; margin-top:8px; text-shadow: 0 2px 10px {net_color}40;">{money(net_transfer)}</div>
+      </div>
+    </div>
+    """
+    
+    return f'{summary_bar}<div class="timeline" style="display:flex; flex-direction:column; gap:8px;">{"".join(items_html)}</div>'
 
 
 def _contact_option_tags(contacts: list[dict], selected_id=None) -> str:
@@ -278,156 +380,129 @@ def _contact_option_tags(contacts: list[dict], selected_id=None) -> str:
     return "".join(opts)
 
 
-def render_contacts_section(
-    contacts: list[dict],
-    passthrough_candidates: list[dict],
-    partner_balances: list[dict] | None = None,
-    merge_suggestions: list[dict] | None = None,
-) -> str:
-    """Simple People (khata) UX: list first, tools secondary."""
-    _ = merge_suggestions, partner_balances
-    import json as _json
-    from datetime import date as _date
+def _render_contact_card(item: dict, *, quiet: bool = False) -> str:
+    contact = item["contact"]
+    bal = item["balance"]
+    cid = contact["id"]
+    cname = contact["name"] or "?"
+    aliases = contact.get("aliases") or []
+    aliases_str = ", ".join(aliases)
+    notes = contact.get("notes") or ""
+    net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
+    entries = int(bal.get("entry_count") or 0)
 
-    today = _date.today().isoformat()
-    contact_opts = _contact_option_tags(contacts)
+    if net > 0:
+        status_code = "owes_you"
+        line = f"Owes you {money(net)}"
+        amount_cls = "people-amt people-amt-pos"
+        amount_txt = money(net)
+    elif net < 0:
+        status_code = "you_owe"
+        line = f"You owe {money(abs(net))}"
+        amount_cls = "people-amt people-amt-neg"
+        amount_txt = money(abs(net))
+    else:
+        status_code = "settled"
+        line = "Settled"
+        amount_cls = "people-amt people-amt-zero"
+        amount_txt = "₹0"
 
-    total_owes_you = Decimal("0")
-    total_you_owe = Decimal("0")
-    active_items: list[dict] = []
-    quiet_items: list[dict] = []
+    meta = f"{entries} entr{'y' if entries == 1 else 'ies'}"
+    if aliases_str:
+        meta += f" · {esc(aliases_str[:40])}"
 
-    for item in contacts:
-        bal = item["balance"]
-        net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
-        if net > 0:
-            total_owes_you += net
-            active_items.append(item)
-        elif net < 0:
-            total_you_owe += abs(net)
-            active_items.append(item)
-        else:
-            quiet_items.append(item)
+    return f"""
+    <div class="people-row contact-card" data-name="{esc(cname.lower())}" data-aliases="{esc(aliases_str.lower())}" data-status="{status_code}" data-quiet="{'1' if quiet else '0'}" data-contact-id="{cid}" data-contact-name="{esc(cname)}" data-aliases-raw="{esc(aliases_str)}" data-notes="{esc(notes)}">
+      <button type="button" class="people-row-main" data-action="open-drawer" data-contact-id="{cid}" data-contact-name="{esc(cname)}">
+        <span class="people-avatar" aria-hidden="true">{esc(cname[0].upper())}</span>
+        <span class="people-row-text">
+          <span class="people-name">{esc(cname)}</span>
+          <span class="people-meta">{line} · {meta}</span>
+        </span>
+        <span class="{amount_cls}">{amount_txt}</span>
+      </button>
+      <div class="people-row-actions">
+        <button type="button" class="button subtle" title="Rename / edit aliases"
+                data-action="edit-contact" data-contact-id="{cid}" data-contact-name="{esc(cname)}" data-aliases="{esc(aliases_str)}" data-notes="{esc(notes)}">Edit</button>
+        <button type="button" class="button" data-action="add-ledger" data-contact-id="{cid}" data-contact-name="{esc(cname)}">+ Money</button>
+        <button type="button" class="button subtle" data-action="open-drawer" data-contact-id="{cid}" data-contact-name="{esc(cname)}">History</button>
+      </div>
+    </div>
+    """
 
-    active_items.sort(
-        key=lambda it: abs(Decimal(str(it["balance"].get("net_balance", it["balance"].get("net", 0))))),
-        reverse=True,
-    )
-    quiet_items.sort(key=lambda it: (it["contact"].get("name") or "").lower())
 
-    def _row(item: dict, *, quiet: bool = False) -> str:
-        contact = item["contact"]
-        bal = item["balance"]
-        cid = contact["id"]
-        cname = contact["name"] or "?"
-        aliases = contact.get("aliases") or []
-        aliases_str = ", ".join(aliases)
-        notes = contact.get("notes") or ""
-        net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
-        entries = int(bal.get("entry_count") or 0)
-        js_name = _json.dumps(cname)
-        js_aliases = _json.dumps(aliases_str)
-        js_notes = _json.dumps(notes)
+def _render_people_toolbar() -> str:
+    return """
+    <div class="people-toolbar">
+      <input id="contact-search-input" class="people-search" type="search" placeholder="Search name…" data-action="search-contacts" autocomplete="off">
+      <div class="people-filters" role="group" aria-label="Filter">
+        <button type="button" class="people-filter active" data-action="filter-status" data-filter="active">Balances</button>
+        <button type="button" class="people-filter" data-action="filter-status" data-filter="owes_you">Owes me</button>
+        <button type="button" class="people-filter" data-action="filter-status" data-filter="you_owe">I owe</button>
+        <button type="button" class="people-filter" data-action="filter-status" data-filter="all">Everyone</button>
+      </div>
+      <button type="button" class="button" data-action="open-modal" data-modal-id="modal-add-contact">+ Person</button>
+    </div>
+    """
 
-        if net > 0:
-            status_code = "owes_you"
-            line = f"Owes you {money(net)}"
-            amount_cls = "people-amt people-amt-pos"
-            amount_txt = money(net)
-        elif net < 0:
-            status_code = "you_owe"
-            line = f"You owe {money(abs(net))}"
-            amount_cls = "people-amt people-amt-neg"
-            amount_txt = money(abs(net))
-        else:
-            status_code = "settled"
-            line = "Settled"
-            amount_cls = "people-amt people-amt-zero"
-            amount_txt = "₹0"
 
-        meta = f"{entries} entr{'y' if entries == 1 else 'ies'}"
-        if aliases_str:
-            meta += f" · {esc(aliases_str[:40])}"
-
-        return f"""
-        <div class="people-row contact-card" data-name="{esc(cname.lower())}" data-aliases="{esc(aliases_str.lower())}" data-status="{status_code}" data-quiet="{'1' if quiet else '0'}">
-          <button type="button" class="people-row-main" onclick='openLedgerDrawer({cid}, {js_name})'>
-            <span class="people-avatar" aria-hidden="true">{esc(cname[0].upper())}</span>
-            <span class="people-row-text">
-              <span class="people-name">{esc(cname)}</span>
-              <span class="people-meta">{line} · {meta}</span>
-            </span>
-            <span class="{amount_cls}">{amount_txt}</span>
-          </button>
-          <div class="people-row-actions">
-            <button type="button" class="button subtle" title="Rename / edit aliases"
-                    onclick='openEditContactModal({cid}, {js_name}, {js_aliases}, {js_notes})'>Edit</button>
-            <button type="button" class="button" onclick='openAddLedgerModal({cid}, {js_name})'>+ Money</button>
-            <button type="button" class="button subtle" onclick='openLedgerDrawer({cid}, {js_name})'>History</button>
-          </div>
-        </div>
-        """
-
-    active_html = "".join(_row(i) for i in active_items) or (
-        '<p class="empty people-empty">Nobody owes money right now. Add a person or log a loan.</p>'
-    )
-    quiet_html = "".join(_row(i, quiet=True) for i in quiet_items)
-    quiet_count = len(quiet_items)
-
-    # Compact pass-through suggestions (collapsed by default)
-    pt_html = ""
-    if passthrough_candidates:
-        pt_items = []
-        for cand in passthrough_candidates[:4]:
-            amt = cand.get("credit_amount") or cand.get("amount") or 0
-            from_name = cand.get("credit_contact") or cand.get("credit_merchant") or "Unknown"
-            to_name = cand.get("debit_contact") or cand.get("debit_merchant") or "Unknown"
-            dt = cand.get("credit_date") or cand.get("date") or ""
-            credit_id = cand.get("credit_tx_id") or cand.get("credit_id") or 0
-            debit_id = cand.get("debit_tx_id") or cand.get("debit_id") or 0
-            from_contact_id = cand.get("from_contact_id") or 0
-            to_contact_id = cand.get("to_contact_id") or 0
-            from_field = (
-                f'<label>From<select name="from_contact_id" required>{_contact_option_tags(contacts, from_contact_id or None)}</select></label>'
-                if not from_contact_id
-                else f'<input type="hidden" name="from_contact_id" value="{from_contact_id}">'
-            )
-            to_field = (
-                f'<label>To<select name="to_contact_id" required>{_contact_option_tags(contacts, to_contact_id or None)}</select></label>'
-                if not to_contact_id
-                else f'<input type="hidden" name="to_contact_id" value="{to_contact_id}">'
-            )
-            pt_items.append(
-                f"""
-                <div class="people-pt-item">
-                  <div class="people-pt-copy">
-                    <strong>{money(amt)}</strong>
-                    <span>{esc(from_name)} → you → {esc(to_name)}</span>
-                    <span class="people-meta">{esc(dt)}</span>
-                  </div>
-                  <form method="post" action="/ledger/passthrough/confirm" class="people-pt-form">
-                    <input type="hidden" name="credit_id" value="{credit_id}">
-                    <input type="hidden" name="debit_id" value="{debit_id}">
-                    <input type="hidden" name="amount" value="{amt}">
-                    <input type="hidden" name="entry_date" value="{dt}">
-                    {from_field}{to_field}
-                    <div class="people-pt-actions">
-                      <button type="submit" name="action" value="confirm" class="button">Mark as rolling</button>
-                      <button type="submit" name="action" value="dismiss" class="button subtle" formnovalidate>Skip</button>
-                    </div>
-                  </form>
+def _render_passthrough_suggestions(passthrough_candidates: list[dict], contacts: list[dict]) -> str:
+    if not passthrough_candidates:
+        return ""
+    pt_items = []
+    for cand in passthrough_candidates[:4]:
+        amt = cand.get("credit_amount") or cand.get("amount") or 0
+        from_name = cand.get("credit_contact") or cand.get("credit_merchant") or "Unknown"
+        to_name = cand.get("debit_contact") or cand.get("debit_merchant") or "Unknown"
+        dt = cand.get("credit_date") or cand.get("date") or ""
+        credit_id = cand.get("credit_tx_id") or cand.get("credit_id") or 0
+        debit_id = cand.get("debit_tx_id") or cand.get("debit_id") or 0
+        from_contact_id = cand.get("from_contact_id") or 0
+        to_contact_id = cand.get("to_contact_id") or 0
+        from_field = (
+            f'<label>From<select name="from_contact_id" required>{_contact_option_tags(contacts, from_contact_id or None)}</select></label>'
+            if not from_contact_id
+            else f'<input type="hidden" name="from_contact_id" value="{from_contact_id}">'
+        )
+        to_field = (
+            f'<label>To<select name="to_contact_id" required>{_contact_option_tags(contacts, to_contact_id or None)}</select></label>'
+            if not to_contact_id
+            else f'<input type="hidden" name="to_contact_id" value="{to_contact_id}">'
+        )
+        pt_items.append(
+            f"""
+            <div class="people-pt-item">
+              <div class="people-pt-copy">
+                <strong>{money(amt)}</strong>
+                <span>{esc(from_name)} → you → {esc(to_name)}</span>
+                <span class="people-meta">{esc(dt)}</span>
+              </div>
+              <form method="post" action="/ledger/passthrough/confirm" class="people-pt-form">
+                <input type="hidden" name="credit_id" value="{credit_id}">
+                <input type="hidden" name="debit_id" value="{debit_id}">
+                <input type="hidden" name="amount" value="{amt}">
+                <input type="hidden" name="entry_date" value="{dt}">
+                {from_field}{to_field}
+                <div class="people-pt-actions">
+                  <button type="submit" name="action" value="confirm" class="button">Mark as rolling</button>
+                  <button type="submit" name="action" value="dismiss" class="button subtle" formnovalidate>Skip</button>
                 </div>
-                """
-            )
-        pt_html = f"""
-        <details class="people-tools">
-          <summary>Possible rolling money <span class="people-chip">{len(passthrough_candidates[:4])}</span></summary>
-          <p class="empty people-hint">Bank pairs that look like A → you → B. Confirm only if you were just a middle person (does not change who owes whom).</p>
-          <div class="people-pt-list">{"".join(pt_items)}</div>
-        </details>
-        """
+              </form>
+            </div>
+            """
+        )
+    return f"""
+    <details class="people-tools">
+      <summary>Possible rolling money <span class="people-chip">{len(passthrough_candidates[:4])}</span></summary>
+      <p class="empty people-hint">Bank pairs that look like A → you → B. Confirm only if you were just a middle person (does not change who owes whom).</p>
+      <div class="people-pt-list">{"".join(pt_items)}</div>
+    </details>
+    """
 
-    tools_html = f"""
+
+def _render_people_tools(contacts: list[dict], today: str) -> str:
+    contact_opts = _contact_option_tags(contacts)
+    return f"""
     <details class="people-tools">
       <summary>More actions</summary>
       <div class="people-tools-grid">
@@ -484,21 +559,14 @@ def render_contacts_section(
     </details>
     """
 
-    quiet_block = ""
-    if quiet_count:
-        quiet_block = f"""
-        <details class="people-tools people-quiet" id="people-quiet-panel">
-          <summary>Settled / no balance <span class="people-chip">{quiet_count}</span></summary>
-          <div id="contacts-grid-quiet" class="people-list">{quiet_html}</div>
-        </details>
-        """
 
-    add_contact_modal = """
+def _render_add_contact_modal() -> str:
+    return """
     <div id="modal-add-contact" class="people-modal" hidden>
       <div class="people-modal-card" role="dialog" aria-labelledby="add-contact-title">
         <div class="people-modal-head">
           <h3 id="add-contact-title">New person</h3>
-          <button type="button" class="button subtle people-modal-close" onclick="closePeopleModal('modal-add-contact')">✕</button>
+          <button type="button" class="button subtle people-modal-close" data-action="close-modal" data-modal-id="modal-add-contact">✕</button>
         </div>
         <form method="post" action="/contacts/create" class="people-simple-form people-modal-form">
           <label class="people-span">Name
@@ -511,7 +579,7 @@ def render_contacts_section(
             <input name="notes" placeholder="Friend, roommate…">
           </label>
           <div class="people-modal-actions">
-            <button type="button" class="button subtle" onclick="closePeopleModal('modal-add-contact')">Cancel</button>
+            <button type="button" class="button subtle" data-action="close-modal" data-modal-id="modal-add-contact">Cancel</button>
             <button type="submit" class="button">Save person</button>
           </div>
         </form>
@@ -519,12 +587,14 @@ def render_contacts_section(
     </div>
     """
 
-    edit_contact_modal = """
+
+def _render_edit_contact_modal() -> str:
+    return """
     <div id="modal-edit-contact" class="people-modal" hidden>
       <div class="people-modal-card" role="dialog" aria-labelledby="edit-contact-title">
         <div class="people-modal-head">
           <h3 id="edit-contact-title">Edit person</h3>
-          <button type="button" class="button subtle people-modal-close" onclick="closePeopleModal('modal-edit-contact')">✕</button>
+          <button type="button" class="button subtle people-modal-close" data-action="close-modal" data-modal-id="modal-edit-contact">✕</button>
         </div>
         <form method="post" action="/contacts/edit" class="people-simple-form people-modal-form">
           <input type="hidden" id="edit-contact-id" name="contact_id">
@@ -541,7 +611,7 @@ def render_contacts_section(
             <input name="notes" id="edit-contact-notes" placeholder="Friend, roommate…">
           </label>
           <div class="people-modal-actions">
-            <button type="button" class="button subtle" onclick="closePeopleModal('modal-edit-contact')">Cancel</button>
+            <button type="button" class="button subtle" data-action="close-modal" data-modal-id="modal-edit-contact">Cancel</button>
             <button type="submit" class="button">Save name</button>
           </div>
         </form>
@@ -549,12 +619,14 @@ def render_contacts_section(
     </div>
     """
 
-    add_entry_modal = """
+
+def _render_add_ledger_modal() -> str:
+    return """
     <div id="modal-add-ledger" class="people-modal" hidden>
       <div class="people-modal-card" role="dialog" aria-labelledby="add-entry-title">
         <div class="people-modal-head">
           <h3 id="add-entry-title">Add money with <span id="ledger-modal-contact-name"></span></h3>
-          <button type="button" class="button subtle people-modal-close" onclick="closePeopleModal('modal-add-ledger')">✕</button>
+          <button type="button" class="button subtle people-modal-close" data-action="close-modal" data-modal-id="modal-add-ledger">✕</button>
         </div>
         <form method="post" action="/ledger/add" class="people-simple-form people-modal-form">
           <input type="hidden" id="ledger-modal-contact-id" name="contact_id">
@@ -594,7 +666,7 @@ def render_contacts_section(
           </label>
 
           <div class="people-modal-actions">
-            <button type="button" class="button subtle" onclick="closePeopleModal('modal-add-ledger')">Cancel</button>
+            <button type="button" class="button subtle" data-action="close-modal" data-modal-id="modal-add-ledger">Cancel</button>
             <button type="submit" class="button">Save</button>
           </div>
         </form>
@@ -602,15 +674,17 @@ def render_contacts_section(
     </div>
     """
 
-    drawer_html = """
-    <div id="ledger-drawer-backdrop" class="people-drawer-backdrop" onclick="closeLedgerDrawer()" hidden></div>
+
+def _render_ledger_drawer() -> str:
+    return """
+    <div id="ledger-drawer-backdrop" class="people-drawer-backdrop" data-action="close-drawer" hidden></div>
     <aside id="ledger-drawer" class="people-drawer" hidden aria-label="Person history">
       <div class="people-drawer-head">
         <div>
           <h3 id="drawer-contact-name">History</h3>
           <p id="drawer-balance-summary" class="people-drawer-summary"></p>
         </div>
-        <button type="button" class="button subtle" onclick="closeLedgerDrawer()">Close</button>
+        <button type="button" class="button subtle" data-action="close-drawer">Close</button>
       </div>
 
       <div class="people-drawer-actions">
@@ -626,6 +700,60 @@ def render_contacts_section(
       <div id="drawer-entries-list" class="people-history"></div>
     </aside>
     """
+
+
+def render_contacts_section(
+    contacts: list[dict],
+    passthrough_candidates: list[dict],
+    partner_balances: list[dict] | None = None,
+    merge_suggestions: list[dict] | None = None,
+) -> str:
+    """Simple People (khata) UX: list first, tools secondary."""
+    _ = merge_suggestions, partner_balances
+    from datetime import date as _date
+
+    today = _date.today().isoformat()
+
+    total_owes_you = Decimal("0")
+    total_you_owe = Decimal("0")
+    active_items: list[dict] = []
+    quiet_items: list[dict] = []
+
+    for item in contacts:
+        bal = item["balance"]
+        net = Decimal(str(bal.get("net_balance", bal.get("net", 0))))
+        if net > 0:
+            total_owes_you += net
+            active_items.append(item)
+        elif net < 0:
+            total_you_owe += abs(net)
+            active_items.append(item)
+        else:
+            quiet_items.append(item)
+
+    active_items.sort(
+        key=lambda it: abs(Decimal(str(it["balance"].get("net_balance", it["balance"].get("net", 0))))),
+        reverse=True,
+    )
+    quiet_items.sort(key=lambda it: (it["contact"].get("name") or "").lower())
+
+    active_html = "".join(_render_contact_card(i) for i in active_items) or (
+        '<p class="empty people-empty">Nobody owes money right now. Add a person or log a loan.</p>'
+    )
+    quiet_html = "".join(_render_contact_card(i, quiet=True) for i in quiet_items)
+    quiet_count = len(quiet_items)
+
+    pt_html = _render_passthrough_suggestions(passthrough_candidates, contacts)
+    tools_html = _render_people_tools(contacts, today)
+
+    quiet_block = ""
+    if quiet_count:
+        quiet_block = f"""
+        <details class="people-tools people-quiet" id="people-quiet-panel">
+          <summary>Settled / no balance <span class="people-chip">{quiet_count}</span></summary>
+          <div id="contacts-grid-quiet" class="people-list">{quiet_html}</div>
+        </details>
+        """
 
     return f"""
     <div class="people-page" aria-label="People balances">
@@ -646,16 +774,7 @@ def render_contacts_section(
         </div>
       </div>
 
-      <div class="people-toolbar">
-        <input id="contact-search-input" class="people-search" type="search" placeholder="Search name…" oninput="filterPeopleList()" autocomplete="off">
-        <div class="people-filters" role="group" aria-label="Filter">
-          <button type="button" class="people-filter active" data-filter="active" onclick="filterPeopleStatus('active', this)">Balances</button>
-          <button type="button" class="people-filter" data-filter="owes_you" onclick="filterPeopleStatus('owes_you', this)">Owes me</button>
-          <button type="button" class="people-filter" data-filter="you_owe" onclick="filterPeopleStatus('you_owe', this)">I owe</button>
-          <button type="button" class="people-filter" data-filter="all" onclick="filterPeopleStatus('all', this)">Everyone</button>
-        </div>
-        <button type="button" class="button" onclick="openPeopleModal('modal-add-contact')">+ Person</button>
-      </div>
+      {_render_people_toolbar()}
 
       {pt_html}
 
@@ -666,10 +785,10 @@ def render_contacts_section(
       {quiet_block}
       {tools_html}
 
-      {add_contact_modal}
-      {edit_contact_modal}
-      {add_entry_modal}
-      {drawer_html}
+      {_render_add_contact_modal()}
+      {_render_edit_contact_modal()}
+      {_render_add_ledger_modal()}
+      {_render_ledger_drawer()}
     </div>
     """
 
@@ -1002,11 +1121,16 @@ def render_unified_transactions_section(
     review_sort: str = "newest",
     review_search: str = "",
     edit_search: str = "",
+    exclude_credits: bool = False,
 ) -> str:
     """P2: single workspace with filters for review + edit."""
     tx_filter = tx_filter if tx_filter in {
         "needs_review", "classified", "shared", "loan", "all"
     } else "needs_review"
+
+    if exclude_credits:
+        pending_rows = [r for r in pending_rows if float(r["credit"] or 0) <= 0]
+        classified_rows = [r for r in classified_rows if float(r["credit"] or 0) <= 0]
 
     pending_count = len(pending_rows)
     classified_count = len(classified_rows)
@@ -1016,6 +1140,8 @@ def render_unified_transactions_section(
     def pill(fid: str, label: str, count: int) -> str:
         active = " active" if tx_filter == fid else " subtle"
         href = f"/?tx_filter={fid}"
+        if exclude_credits:
+            href += "&exclude_credits=1"
         if review_search:
             href += f"&review_search={urllib.parse.quote(review_search)}"
         if edit_search:
@@ -1027,13 +1153,37 @@ def render_unified_transactions_section(
             f'{esc(label)} <strong>{count}</strong></a>'
         )
 
+    btn_active = " active" if exclude_credits else " subtle"
+    btn_label = "🚫 Credits Filtered (Debits Only)" if exclude_credits else "💳 Filter out credits"
+    toggle_val = "0" if exclude_credits else "1"
+    
+    toggle_href = f"/?tx_filter={tx_filter}"
+    if toggle_val == "1":
+        toggle_href += "&exclude_credits=1"
+    if review_search:
+        toggle_href += f"&review_search={urllib.parse.quote(review_search)}"
+    if edit_search:
+        toggle_href += f"&edit_search={urllib.parse.quote(edit_search)}"
+    toggle_href += f"&review_sort={urllib.parse.quote(review_sort)}#review"
+
+    exclude_credits_btn = (
+        f'<a class="button filter-pill{btn_active}" href="{toggle_href}" '
+        f'style="padding:6px 14px; font-size:12px; border-radius:16px; text-decoration:none;">'
+        f'{btn_label}</a>'
+    )
+
     filters = f"""
-    <div class="tx-filter-bar">
-      {pill("needs_review", "Needs review", pending_count)}
-      {pill("classified", "Classified", classified_count)}
-      {pill("shared", "Shared", shared_count)}
-      {pill("loan", "Loans", loan_count)}
-      {pill("all", "All", pending_count + classified_count)}
+    <div class="tx-filter-bar" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        {pill("needs_review", "Needs review", pending_count)}
+        {pill("classified", "Classified", classified_count)}
+        {pill("shared", "Shared", shared_count)}
+        {pill("loan", "Loans", loan_count)}
+        {pill("all", "All", pending_count + classified_count)}
+      </div>
+      <div>
+        {exclude_credits_btn}
+      </div>
     </div>
     """
 
@@ -1495,6 +1645,7 @@ def page(
     all_users: list[str] | None = None,
     partner_balances: list[dict] | None = None,
     tx_filter: str = "needs_review",
+    exclude_credits: bool = False,
 ) -> bytes:
     """Assemble the full dashboard HTML page from pre-fetched data."""
     all_users = all_users or []
@@ -1506,27 +1657,53 @@ def page(
     tx_filter = tx_filter if tx_filter in {
         "needs_review", "classified", "shared", "loan", "all"
     } else "needs_review"
-    filtered_review = filter_review_rows(data["pending"], review_search)
-    pending_review = sort_review_rows(filtered_review, review_sort)
-    # Split review queue by debit/credit (legacy split still used for badge counts)
-    debit_review = [r for r in pending_review if r["debit"] and float(r["debit"] or 0) > 0]
-    credit_review = [r for r in pending_review if r["credit"] and float(r["credit"] or 0) > 0]
-    # Filter by selected date period
+    # Full queue sizes for Home attention (not period-filtered — all-time)
+    attention_review_count = len(data.get("pending") or [])
+    attention_pt_count = len(data.get("passthrough_candidates") or [])
+
+    # Resolve the active date range (for dashboard charts + period badge counts only)
+    min_date, max_date = date_bounds(data.get("transactions") or [])
+    # Track whether the user explicitly chose a date range
+    period_explicit = bool(start_date or end_date)
+    # Default: current calendar month (not full history)
+    if not start_date and not end_date:
+        today = date.today()
+        month_start = today.replace(day=1).isoformat()
+        if today.month == 12:
+            next_month = today.replace(year=today.year + 1, month=1, day=1)
+        else:
+            next_month = today.replace(month=today.month + 1, day=1)
+        month_end = (next_month - timedelta(days=1)).isoformat()
+        start_date = month_start
+        end_date = month_end
+        # Clamp to available data when possible
+        if min_date and start_date < min_date:
+            start_date = min_date
+        if max_date and end_date > max_date:
+            end_date = max_date
+    else:
+        start_date = start_date if start_date else min_date
+        end_date = end_date if end_date else max_date
+
     def _in_period(r):
-        txn_date = str(r["txn_date"] or "")
+        txn_date = str(row_get(r, "txn_date") or "")
         if start_date and txn_date < start_date:
             return False
         if end_date and txn_date > end_date:
             return False
         return True
-    debit_review = [r for r in debit_review if _in_period(r)]
-    credit_review = [r for r in credit_review if _in_period(r)]
-    # Unified pending list (debits + credits) for Transactions workspace
-    unified_pending = [r for r in pending_review if _in_period(r)]
+
+    # Filter the pending (needs-review) queue to the selected period always —
+    # keeps the badge count and review list aligned with what the user is looking at.
+    filtered_review = filter_review_rows(
+        [r for r in (data.get("pending") or []) if _in_period(r)], review_search
+    )
+    pending_review = sort_review_rows(filtered_review, review_sort)
+    # Split review queue by debit/credit (legacy split still used for badge counts)
+    debit_review = [r for r in pending_review if row_get(r, "debit") and float(row_get(r, "debit") or 0) > 0]
+    credit_review = [r for r in pending_review if row_get(r, "credit") and float(row_get(r, "credit") or 0) > 0]
+    unified_pending = pending_review
     pending_badge_count = len(unified_pending)
-    # Full queue size for Home attention (not period-filtered)
-    attention_review_count = len(data.get("pending") or [])
-    attention_pt_count = len(data.get("passthrough_candidates") or [])
 
     def _row_field(row, key, default=None):
         try:
@@ -1550,8 +1727,21 @@ def page(
         attention_review_count, attention_pt_count, open_shared_null
     )
     mobile_nav_html = render_mobile_bottom_nav(pending_badge_count)
-    editable_all = [row for row in data["transactions"] if row["status"] != "needs_review"]
-    filtered_edit = filter_editable_rows(data["transactions"], edit_search)
+    # For Transactions/Search/MoneyFlow tabs: only apply period filter when the user
+    # explicitly chose a date range. On the auto-default (current month), show all-time
+    # so no data is hidden if your data is from a previous month.
+    tx_source = (
+        [r for r in data["transactions"] if _in_period(r)]
+        if period_explicit
+        else data["transactions"]
+    )
+    shared_source = (
+        [r for r in (data.get("shared") or []) if _in_period(r)]
+        if period_explicit
+        else (data.get("shared") or [])
+    )
+    editable_all = [row for row in tx_source if row["status"] != "needs_review"]
+    filtered_edit = filter_editable_rows(tx_source, edit_search)
     # Show more rows in unified workspace
     editable_rows = filtered_edit if edit_search else filtered_edit[:50]
     unified_tx_html = render_unified_transactions_section(
@@ -1562,32 +1752,14 @@ def page(
         review_sort=review_sort,
         review_search=review_search,
         edit_search=edit_search,
+        exclude_credits=exclude_credits,
     )
     person_matches = sorted(
-        filter_transactions_by_text(data["transactions"], person_search),
+        filter_transactions_by_text(tx_source, person_search),
         key=lambda row: (row["txn_date"], row["id"]),
         reverse=True,
     )
-    min_date, max_date = date_bounds(data["transactions"])
-    # Default: current calendar month (not full history)
-    if not start_date and not end_date:
-        today = date.today()
-        month_start = today.replace(day=1).isoformat()
-        if today.month == 12:
-            next_month = today.replace(year=today.year + 1, month=1, day=1)
-        else:
-            next_month = today.replace(month=today.month + 1, day=1)
-        month_end = (next_month - timedelta(days=1)).isoformat()
-        start_date = month_start
-        end_date = month_end
-        # Clamp to available data when possible
-        if min_date and start_date < min_date:
-            start_date = min_date
-        if max_date and end_date > max_date:
-            end_date = max_date
-    else:
-        start_date = start_date if start_date else min_date
-        end_date = end_date if end_date else max_date
+    # Dashboard charts/totals always use the resolved period (default or explicit)
     period_rows = filter_dashboard_rows(data["transactions"], start_date, end_date, exclude_business)
     period_totals = dashboard_totals(period_rows, use_my_share)
     period_categories = {
@@ -1666,10 +1838,10 @@ def page(
         f"""
         <table>
           <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th></tr></thead>
-          <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td></tr>" for r in data['shared']) or '<tr><td colspan="6" class="empty">No shared expenses yet.</td></tr>'}</tbody>
+          <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td></tr>" for r in shared_source) or '<tr><td colspan="6" class="empty">No shared expenses yet.</td></tr>'}</tbody>
         </table>
         """,
-        f"{len(data['shared'])} shared",
+        f"{len(shared_source)} shared",
     )
     # Contact datalist for shared-with picker
     contact_options = ""
@@ -1695,7 +1867,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=19">
+  <link rel="stylesheet" href="/style.css?v=20">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1821,8 +1993,13 @@ def page(
         </div>
         
         <section style="margin-top:24px;">
-          <h2>Money Flow</h2>
-          {render_money_flows_view(data['transactions'])}
+          <h2>Money Flow & Cash Transfers</h2>
+          {render_money_flows_view(tx_source)}
+        </section>
+
+        <section style="margin-top:24px;">
+          <h2>Recent Uploaded Statements & File Logs</h2>
+          {render_recent_imports_view(data.get('recent_imports', []))}
         </section>
       </div>
 
@@ -1853,6 +2030,7 @@ def page(
             review_sort=review_sort,
             review_search=review_search,
             edit_search=edit_search,
+            exclude_credits=exclude_credits,
         )}
       </div>
 
@@ -1902,7 +2080,7 @@ def page(
   </div>
   
   {mobile_nav_html}
-  <script src="/app.js?v=18"></script>
+  <script src="/app.js?v=21"></script>
 </body>
 </html>
 """

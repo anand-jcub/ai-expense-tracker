@@ -84,6 +84,18 @@ class DualStackServer(ThreadingHTTPServer):
 _CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError, OSError)
 
 
+def parse_multipart(body: bytes, content_type: str) -> dict[str, Any]:
+    """Parse multipart form-data request body into a dictionary of part objects."""
+    header_str = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n"
+    msg = BytesParser(policy=default).parsebytes(header_str.encode("utf-8") + body)
+    parts = {}
+    for part in msg.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if name:
+            parts[name] = part
+    return parts
+
+
 class ExpenseHandler(BaseHTTPRequestHandler):
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -96,6 +108,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             if part.startswith("session="):
                 session_id = part[len("session="):]
                 return verify_session(session_id)
+            if part.startswith("session_id="):
+                session_id = part[len("session_id="):]
+                return verify_session(session_id)
         return None
 
     def get_session_id(self) -> str | None:
@@ -104,7 +119,19 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             part = part.strip()
             if part.startswith("session="):
                 return part[len("session="):]
+            if part.startswith("session_id="):
+                return part[len("session_id="):]
         return None
+
+    def check_authentication(self) -> bool:
+        """Check authentication, set current_user and db_path in request_context."""
+        username = self.get_session_username()
+        if username:
+            self.current_user = username
+            from .db import DATA_DIR, request_context
+            request_context.db_path = DATA_DIR / f"expenses_{username.lower()}.db"
+            return True
+        return False
 
     def _db_path_for(self, username: str) -> Path:
         return DATA_DIR / f"expenses_{username.lower()}.db"
@@ -169,7 +196,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self._safe_write(body)
@@ -338,6 +365,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                         all_users=all_users,
                         partner_balances=partner_balances,
                         tx_filter=params.get("tx_filter", ["needs_review"])[0],
+                        exclude_credits="exclude_credits" in params or params.get("exclude_credits", ["0"])[0] in ("1", "true"),
                     )
                 )
             elif parsed.path == "/export.csv":
@@ -621,9 +649,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 shared_with = params.get(f"shared_with_{transaction_id}", [""])[0].strip() or None
                 if shared_with:
                     expense_type = "Shared"
-                split_ratio = split_ratio_from_people(
-                    params.get(f"split_people_{transaction_id}", ["1"])[0]
-                )
+                raw_people = params.get(f"split_people_{transaction_id}", [""])[0].strip()
+                if not raw_people or (expense_type == "Shared" and raw_people in ("1", "0")):
+                    raw_people = "2" if expense_type == "Shared" else "1"
+                split_ratio = split_ratio_from_people(raw_people)
                 notes = params.get(f"notes_{transaction_id}", [""])[0].strip() or None
                 learn = f"learn_{transaction_id}" in params
                 review_transaction(
@@ -661,9 +690,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     shared_with = params.get(f"edit_shared_with_{transaction_id}", [""])[0].strip() or None
                     if shared_with:
                         expense_type = "Shared"
-                    split_ratio = split_ratio_from_people(
-                        params.get(f"edit_split_people_{transaction_id}", ["1"])[0]
-                    )
+                    raw_people = params.get(f"edit_split_people_{transaction_id}", [""])[0].strip()
+                    if not raw_people or (expense_type == "Shared" and raw_people in ("1", "0")):
+                        raw_people = "2" if expense_type == "Shared" else "1"
+                    split_ratio = split_ratio_from_people(raw_people)
                     notes = params.get(f"edit_notes_{transaction_id}", [""])[0].strip() or None
                     learn = f"edit_learn_{transaction_id}" in params
                     review_transaction(
@@ -686,8 +716,34 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             logger.exception("Unexpected error editing classifications.")
             self.redirect(error=str(exc))
 
-    def sync_shared_transaction(self, conn, transaction_id: int, owner: str, shared_with: str) -> None:
-        """Replicate a shared transaction to the partner's database."""
+    def sync_shared_transaction(self, conn, transaction_id: int, arg3: str | None = None, arg4: str | None = None) -> None:
+        """Replicate shared transaction into partner DB, or delete replicated copy if unshared."""
+        if arg4 is None:
+            shared_with = arg3
+            owner = getattr(self, "current_user", "user") or "user"
+        else:
+            owner = arg3
+            shared_with = arg4
+
+        ref = f"shared_src:{owner}:{transaction_id}"
+        if not shared_with:
+            try:
+                from .db import DATA_DIR, request_context
+                dir_path = Path(request_context.db_path).parent if hasattr(request_context, "db_path") and request_context.db_path else DATA_DIR
+                for db_file in dir_path.glob("expenses_*.db"):
+                    pconn = connect(db_file)
+                    try:
+                        r = pconn.execute("SELECT id FROM transactions WHERE reference = ?", (ref,)).fetchone()
+                        if r:
+                            tid = int(r["id"])
+                            pconn.execute("DELETE FROM classifications WHERE transaction_id = ?", (tid,))
+                            pconn.execute("DELETE FROM transactions WHERE id = ?", (tid,))
+                            pconn.commit()
+                    finally:
+                        pconn.close()
+            except Exception:
+                logger.exception("Error deleting unshared transaction %s", transaction_id)
+            return
         try:
             row = conn.execute(
                 "SELECT t.*, c.category, c.expense_type, c.split_ratio, c.my_share, c.notes "
@@ -697,43 +753,74 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             ).fetchone()
             if not row:
                 return
-            partner_db = self._db_path_for(shared_with)
-            with connect(partner_db) as pconn:
+            from .db import DATA_DIR, get_or_create_shared_import, request_context, utc_now
+            if hasattr(request_context, "db_path") and request_context.db_path:
+                partner_db = Path(request_context.db_path).parent / f"expenses_{shared_with.lower()}.db"
+            else:
+                partner_db = self._db_path_for(shared_with)
+            partner_db.parent.mkdir(parents=True, exist_ok=True)
+            pconn = connect(partner_db)
+            try:
                 # Check if already replicated
+                ref = f"shared_src:{owner}:{transaction_id}"
                 existing = pconn.execute(
-                    "SELECT id FROM transactions WHERE source_txn_id = ? AND uploaded_by = ?",
-                    (transaction_id, owner),
+                    "SELECT id FROM transactions WHERE reference = ? OR (source_txn_id = ? AND uploaded_by = ?)",
+                    (ref, transaction_id, owner),
                 ).fetchone()
                 if existing:
                     return
                 # Insert the replicated transaction
-                pconn.execute(
-                    """INSERT OR IGNORE INTO transactions
-                       (txn_date, value_date, description, debit, credit, balance,
-                        reference, raw_text, merchant_display, amount_signed,
-                        uploaded_by, source_txn_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                import_id = get_or_create_shared_import(pconn)
+                my_share = float(row["my_share"] or 0)
+                debit = float(row["debit"] or 0)
+                partner_share = max(0.0, debit - my_share)
+                cur = pconn.execute(
+                    """
+                    INSERT INTO transactions (
+                        import_id, source_hash, txn_date, value_date, description, reference,
+                        debit, credit, amount_signed, balance, raw_text, merchant_key,
+                        merchant_display, created_at, uploaded_by, source_txn_id, is_external, external_payer
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, 0.0, ?, 0.0, ?, ?, ?, ?, ?, ?, 1, ?
+                    )
+                    """,
                     (
-                        row["txn_date"], row["value_date"], row["description"],
-                        row["debit"], row["credit"], row["balance"],
-                        row["reference"], row["raw_text"], row["merchant_display"],
-                        row["amount_signed"], owner, transaction_id,
+                        import_id,
+                        f"shared_{owner}_{transaction_id}",
+                        row["txn_date"],
+                        row["value_date"],
+                        f"Shared from {owner}: {row['description']}",
+                        ref,
+                        debit,
+                        -debit,
+                        row["raw_text"],
+                        row["merchant_key"],
+                        row["merchant_display"],
+                        utc_now(),
+                        owner,
+                        transaction_id,
+                        owner,
                     ),
                 )
-                new_id = pconn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                if new_id:
-                    pconn.execute(
-                        """INSERT OR IGNORE INTO classifications
-                           (transaction_id, category, expense_type, split_ratio, my_share,
-                            status, confidence, notes, shared_with)
-                           VALUES (?,?,?,?,?,'confirmed',1.0,?,?)""",
-                        (
-                            new_id, row["category"], row["expense_type"],
-                            row["split_ratio"], row["my_share"],
-                            row["notes"], owner,
-                        ),
-                    )
+                replicated_id = int(cur.lastrowid)
+                pconn.execute(
+                    """
+                    INSERT INTO classifications (
+                        transaction_id, status, expense_type, category, split_ratio, my_share, confidence, notes, updated_at
+                    ) VALUES (?, 'needs_review', 'Shared', ?, ?, ?, 1.0, ?, ?)
+                    """,
+                    (
+                        replicated_id,
+                        row["category"],
+                        row["split_ratio"],
+                        partner_share,
+                        f"Shared by {owner}: {dict(row).get('notes') or ''}".strip(),
+                        utc_now(),
+                    ),
+                )
                 pconn.commit()
+            finally:
+                pconn.close()
         except Exception:
             logger.exception("Error syncing shared transaction to partner %s", shared_with)
 
@@ -1071,14 +1158,14 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             self.redirect(error=str(exc), tab="contacts")
 
     def handle_materialize_shared(self, username: str) -> None:
-        """Removed with USB simplification — food splits are manual ledger entries."""
+        """Removed with USB simplification - food splits are manual ledger entries."""
         self.redirect(
             message="Shared materialize removed. Add a food-split ledger entry under People.",
             tab="contacts",
         )
 
     def handle_ledger_rolling(self, username: str) -> None:
-        """A → You → B rolling chain: two pass-through legs, nets unchanged."""
+        """A -> You -> B rolling chain: two pass-through legs, nets unchanged."""
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length).decode("utf-8")
         params = urllib.parse.parse_qs(body)
@@ -1193,7 +1280,7 @@ def run(host: str = "127.0.0.1", port: int = 8765) -> None:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        logger.info("Shutting down…")
+        logger.info("Shutting down...")
     finally:
         try:
             server.server_close()

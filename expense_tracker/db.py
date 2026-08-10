@@ -7,11 +7,13 @@ import logging
 import re
 import sqlite3
 import uuid
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+request_context = threading.local()
 
 from .classifier import (
     DEFAULT_SPLIT_RATIO,
@@ -31,8 +33,10 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(path: Path = DB_PATH) -> sqlite3.Connection:
+def connect(path: Path | None = None) -> sqlite3.Connection:
     """Open a DB connection and ensure schema/migrations are applied."""
+    if path is None:
+        path = getattr(request_context, "db_path", DB_PATH)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -259,6 +263,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     # Column migrations for multi-user & ledger support
     _safe_add_column(conn, "transactions", "uploaded_by", "TEXT")
     _safe_add_column(conn, "transactions", "source_txn_id", "INTEGER")
+    _safe_add_column(conn, "transactions", "is_external", "INTEGER DEFAULT 0")
+    _safe_add_column(conn, "transactions", "external_payer", "TEXT")
+    _safe_add_column(conn, "transactions", "shared_with", "TEXT")
     _safe_add_column(conn, "classifications", "shared_with", "TEXT")
     _safe_add_column(conn, "contacts", "aliases_json", "TEXT DEFAULT '[]'")
     _safe_add_column(conn, "contacts", "notes", "TEXT")
@@ -441,6 +448,25 @@ def transaction_hash(row: dict) -> str:
         credit_str,
     ])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_or_create_shared_import(conn: sqlite3.Connection) -> int:
+    """Get or create default import record for shared / synthetic transactions."""
+    row = conn.execute(
+        "SELECT id FROM imports WHERE source_filename = 'shared_transactions.csv'"
+    ).fetchone()
+    if row:
+        return int(row["id"])
+    now = utc_now()
+    cur = conn.execute(
+        """
+        INSERT INTO imports (source_filename, file_sha256, imported_at, password_used)
+        VALUES ('shared_transactions.csv', 'shared_synthetic', ?, 0)
+        """,
+        (now,),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
 
 
 def import_transactions(
@@ -701,14 +727,6 @@ def review_transaction(
     if not tx:
         raise ValueError(f"Unknown transaction id: {transaction_id}")
 
-    now = utc_now()
-    rule_id = None
-    if learn:
-        rule_id = _save_merchant_rule(
-            conn, tx["merchant_key"], tx["merchant_display"],
-            category, expense_type, split_ratio, now,
-        )
-
     # Resolve partner contact when text provided
     sw_text = (shared_with or "").strip() or None
     sw_cid = shared_with_contact_id
@@ -723,6 +741,14 @@ def review_transaction(
             pass
     if sw_text or sw_cid:
         expense_type = "Shared"
+
+    now = utc_now()
+    rule_id = None
+    if learn:
+        rule_id = _save_merchant_rule(
+            conn, tx["merchant_key"], tx["merchant_display"],
+            category, expense_type, split_ratio, now,
+        )
 
     amount = Decimal(str(tx["amount_signed"]))
     my_share = effective_share(amount, expense_type, split_ratio)
@@ -877,6 +903,14 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
             "balance": bal,
         })
     passthrough_candidates = detect_passthrough_candidates(conn)
+    recent_imports = conn.execute(
+        """
+        SELECT id, source_filename, file_sha256, imported_at, password_used, transaction_count
+        FROM imports
+        ORDER BY id DESC
+        LIMIT 20
+        """
+    ).fetchall()
 
     return {
         "transactions": rows,
@@ -889,6 +923,7 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
         "linkable": get_linkable_transactions(conn),
         "contacts": contacts_with_balances,
         "passthrough_candidates": passthrough_candidates,
+        "recent_imports": recent_imports,
         "merge_suggestions": [],
         "loan_suggestions": [],
     }

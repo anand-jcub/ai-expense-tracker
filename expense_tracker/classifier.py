@@ -7,21 +7,101 @@ from decimal import Decimal
 
 DEFAULT_SPLIT_RATIO = Decimal("1.00")
 
-CATEGORY_SEEDS = {
-    "swiggy": ("Food", "Personal"),
-    "zomato": ("Food", "Personal"),
-    "bigbasket": ("Groceries", "Personal"),
-    "bbdaily": ("Groceries", "Personal"),
-    "netflix": ("Subscription", "Personal"),
-    "spotify": ("Subscription", "Personal"),
+# ---------------------------------------------------------------------------
+# CATEGORY_SEEDS — keyword → (category, expense_type)
+# Keys are matched as substrings against the clean merchant_key produced by
+# normalize_merchant().  Order matters for the first match — put more specific
+# entries before shorter / more ambiguous ones.
+# ---------------------------------------------------------------------------
+CATEGORY_SEEDS: dict[str, tuple[str, str]] = {
+    # ── Groceries / supermarket ─────────────────────────────────────────────
+    "blinkit":      ("Groceries", "Personal"),
+    "jiomart":      ("Groceries", "Personal"),
+    "jiomartg":     ("Groceries", "Personal"),
+    "bigbasket":    ("Groceries", "Personal"),
+    "bbdaily":      ("Groceries", "Personal"),
+    "bbnow":        ("Groceries", "Personal"),
+    "bb now":       ("Groceries", "Personal"),
+    "dunzo":        ("Groceries", "Personal"),
+    "zepto":        ("Groceries", "Personal"),
+    "dmart":        ("Groceries", "Personal"),
+    "reliance fresh": ("Groceries", "Personal"),
+    "innovati":     ("Groceries", "Personal"),   # Innovative Supermarket
+    "lulu":         ("Groceries", "Personal"),
+    "more supermarket": ("Groceries", "Personal"),
+    # ── Food / restaurants ──────────────────────────────────────────────────
+    "swiggy":       ("Food", "Personal"),
+    "zomato":       ("Food", "Personal"),
+    "zomato ltd":   ("Food", "Personal"),
+    "wah chaii":    ("Food", "Personal"),
+    "chai":         ("Food", "Personal"),
+    "hotel":        ("Food", "Personal"),
+    "restaurant":   ("Food", "Personal"),
+    "cafe":         ("Food", "Personal"),
+    "bakery":       ("Food", "Personal"),
+    "althar":       ("Food", "Personal"),        # Althar Tea
+    "madras":       ("Food", "Personal"),        # Madras Cafe / Madras Saravana etc.
+    # ── Transport ───────────────────────────────────────────────────────────
+    "uber":         ("Transport", "Personal"),
+    "ola":          ("Transport", "Personal"),
+    "rapido":       ("Transport", "Personal"),
+    "redbus":       ("Transport", "Personal"),
+    "irctc":        ("Transport", "Personal"),
+    "indian rail":  ("Transport", "Personal"),
+    "metro":        ("Transport", "Personal"),
+    "fasttag":      ("Transport", "Personal"),
+    "petrol":       ("Transport", "Personal"),
+    "fuel":         ("Transport", "Personal"),
+    # ── Utilities ───────────────────────────────────────────────────────────
+    "airtel":       ("Utilities", "Personal"),
+    "bsnl":         ("Utilities", "Personal"),
+    "bescom":       ("Utilities", "Personal"),
+    "kseb":         ("Utilities", "Personal"),
+    "tata power":   ("Utilities", "Personal"),
+    "msedcl":       ("Utilities", "Personal"),
+    "electricity":  ("Utilities", "Personal"),
+    "water bill":   ("Utilities", "Personal"),
+    # ── Subscriptions ───────────────────────────────────────────────────────
+    "netflix":      ("Subscription", "Personal"),
+    "spotify":      ("Subscription", "Personal"),
     "amazon prime": ("Subscription", "Personal"),
-    "uber": ("Transport", "Personal"),
-    "ola": ("Transport", "Personal"),
-    "rapido": ("Transport", "Personal"),
-    "airtel": ("Utilities", "Personal"),
-    "jio": ("Utilities", "Personal"),
-    "bescom": ("Utilities", "Personal"),
-    "kseb": ("Utilities", "Personal"),
+    "prime video":  ("Subscription", "Personal"),
+    "hotstar":      ("Subscription", "Personal"),
+    "disney":       ("Subscription", "Personal"),
+    "youtube premium": ("Subscription", "Personal"),
+    "apple":        ("Subscription", "Personal"),
+    "google":       ("Subscription", "Personal"),
+    "github":       ("Subscription", "Personal"),
+    "chatgpt":      ("Subscription", "Personal"),
+    "openai":       ("Subscription", "Personal"),
+    "xai":          ("Subscription", "Personal"),
+    "grok":         ("Subscription", "Personal"),
+    "jio prep":     ("Subscription", "Personal"),
+    # ── Entertainment ───────────────────────────────────────────────────────
+    "bookmyshow":   ("Entertainment", "Personal"),
+    "bigtree":      ("Entertainment", "Personal"),   # BookMyShow parent
+    "cinepolis":    ("Entertainment", "Personal"),
+    "pvr":          ("Entertainment", "Personal"),
+    "inox":         ("Entertainment", "Personal"),
+    # ── Health ──────────────────────────────────────────────────────────────
+    "pharmacy":     ("Health", "Personal"),
+    "medplus":      ("Health", "Personal"),
+    "apollo":       ("Health", "Personal"),
+    "1mg":          ("Health", "Personal"),
+    "practo":       ("Health", "Personal"),
+    "dermavue":     ("Health", "Personal"),
+    "informat":     ("Health", "Personal"),   # IKM Informatech clinic etc.
+    "clinic":       ("Health", "Personal"),
+    "hospital":     ("Health", "Personal"),
+    "lab":          ("Health", "Personal"),
+    # ── Shopping / e-commerce ───────────────────────────────────────────────
+    "amazon":       ("Shopping", "Personal"),
+    "flipkart":     ("Shopping", "Personal"),
+    "myntra":       ("Shopping", "Personal"),
+    "ajio":         ("Shopping", "Personal"),
+    "nykaa":        ("Shopping", "Personal"),
+    # ── Jio (telecom) — after jio prep & jiomart so those match first ───────
+    "jio":          ("Utilities", "Personal"),
 }
 
 STOP_TOKENS = {
@@ -53,6 +133,24 @@ STOP_TOKENS = {
     "p2m",
     "p2p",
     "sbin",
+    "dr",
+    "cr",
+    "via",
+    "for",
+    "no",
+    "pay",
+    "stati",
+    "recur",
+    "manda",
+    "payme",
+}
+
+# 4-letter IFSC bank codes that appear in UPI descriptions (position after payee name)
+_BANK_CODES = {
+    "sbin", "hdfc", "icic", "yesb", "fdrl", "utib", "cnrb", "sibl", "nspb",
+    "kkbk", "ubin", "sbip", "idfb", "axis", "kotak", "dcbl", "pmcb",
+    "barb", "punb", "mahb", "bkid", "cbin", "alla", "orbc", "vijb",
+    "stbp", "srcb", "pytm", "ratn", "finf", "airp", "ioba", "idib",
 }
 
 
@@ -111,24 +209,85 @@ def rule_match_score(merchant_key: str, rule_key: str) -> Decimal:
     return Decimal("0")
 
 
+def _is_upi_handle(token: str) -> bool:
+    """Return True if the token looks like a UPI VPA handle (contains @) or
+    is a run-together alphanumeric ID typically used as the UPI ID field."""
+    if "@" in token:
+        return True
+    # UPI handles are usually long runs like 'bipinbalak', 'swiggyinst', 'altharatea'
+    # They're all-lowercase, longer than 6 chars, no spaces
+    if len(token) >= 7 and token.isalpha():
+        return True
+    return False
+
+
+def _extract_upi_payee(raw: str) -> str | None:
+    """Parse a UPI/DR/.../PAYEE/BANKCODE/vpa/... description and return the
+    clean payee name, or None if not a recognised UPI format."""
+    # Normalise: collapse whitespace inside segments that the bank breaks
+    text = re.sub(r"[\r\n]+", " ", raw).strip()
+    # Quick gate — must start with UPI/
+    if not re.match(r"(?i)^upi/", text):
+        return None
+    # Split on /
+    parts = [p.strip() for p in text.split("/")]
+    # Expected: UPI, DR|CR, refno, PAYEE NAME, BANKCODE, vpa-handle, [suffix...]
+    if len(parts) < 4:
+        return None
+    # parts[1] is DR or CR — skip
+    # parts[2] is the numeric reference — skip
+    # parts[3] is the payee name — THIS is what we want
+    payee_raw = parts[3].strip()
+    # Clean the payee: remove leading digits/special chars
+    payee_clean = re.sub(r"^[\d\s]+", "", payee_raw).strip()
+    # Remove trailing single-letter initials (e.g. "BIPIN B" -> "Bipin")
+    payee_clean = re.sub(r"\s+[A-Za-z]$", "", payee_clean).strip()
+    # Title-case
+    if not payee_clean:
+        return None
+    return " ".join(w.capitalize() for w in payee_clean.split())
+
+
 def normalize_merchant(value: str) -> str:
+    """Return a compact lowercase key suitable for fuzzy matching."""
+    # For UPI transactions, extract payee name directly
+    upi_payee = _extract_upi_payee(value)
+    if upi_payee:
+        return upi_payee.lower()
+
+    # General path for NEFT, IMPS, POS, manual, etc.
     text = value.lower()
     text = re.sub(r"[\r\n]+", " ", text)
+    # Strip leading bank-prefix noise (e.g. "NEFT*CHAS0INBX01*CHASH00052131772 *")
+    text = re.sub(r"^(neft|imps|rtgs|pos|ach|ecs)[^a-z]*", "", text)
     text = re.sub(r"[^a-z0-9@.\-/ ]+", " ", text)
+    # Remove pure numbers and reference-like tokens (alpha+3+ digits)
     text = re.sub(r"\b\d{4,}\b", " ", text)
-    text = re.sub(r"\b[a-z]{2,}\d{3,}\b", " ", text)
+    text = re.sub(r"\b[a-z]{1,3}\d{3,}\b", " ", text)
     parts = re.split(r"[/\-*@. ]+", text)
     useful = [
         p
         for p in parts
-        if len(p) > 1 and p not in STOP_TOKENS and not p.isdigit() and not any(ch.isdigit() for ch in p)
+        if len(p) > 1
+        and p not in STOP_TOKENS
+        and p not in _BANK_CODES
+        and not p.isdigit()
+        and not any(ch.isdigit() for ch in p)
+        and not _is_upi_handle(p)
     ]
     if not useful:
-        useful = [p for p in parts if p and p not in STOP_TOKENS]
+        # Fallback: only strip stop tokens and bank codes
+        useful = [p for p in parts if p and p not in STOP_TOKENS and p not in _BANK_CODES]
     return " ".join(useful[:4]).strip()
 
 
 def display_merchant(description: str, fallback: str = "Unknown merchant") -> str:
+    """Return a human-readable merchant name for a transaction description."""
+    # Fast path: UPI with a recognisable payee
+    upi_payee = _extract_upi_payee(description)
+    if upi_payee:
+        return upi_payee
+
     key = normalize_merchant(description)
     if not key:
         return fallback
@@ -189,10 +348,11 @@ def classify_transaction(conn, merchant_key: str) -> Classification:
     seeded = seed_match(merchant_key)
     if seeded:
         category, expense_type = seeded
+        split_ratio = Decimal("0.50") if expense_type == "Shared" else DEFAULT_SPLIT_RATIO
         return Classification(
             category=category,
             expense_type=expense_type,
-            split_ratio=DEFAULT_SPLIT_RATIO,
+            split_ratio=split_ratio,
             status="auto",
             confidence=Decimal("0.72"),
         )

@@ -4,7 +4,7 @@
 
   var FILTER_KEYS = [
     'start_date', 'end_date', 'exclude_business', 'use_my_share',
-    'review_sort', 'review_search', 'edit_search', 'person_search'
+    'review_sort', 'review_search', 'edit_search', 'person_search', 'exclude_credits'
   ];
 
   /* ── Diagnostic Global Error Logger ── */
@@ -525,7 +525,6 @@
     }
   };
 
-  /* ── Type-first chips + progressive fields ── */
   window.selectExpenseType = function (chipBtn) {
     if (!chipBtn) return;
     var rowKey = chipBtn.getAttribute('data-row');
@@ -540,7 +539,20 @@
         c.classList.toggle('active', c.getAttribute('data-type') === type);
       });
     }
-    if (selectEl) window.toggleTypeFields(selectEl);
+    if (selectEl) {
+      window.toggleTypeFields(selectEl);
+    } else {
+      var showShared = type === 'Shared';
+      document.querySelectorAll('.shared-only-field[data-row="' + rowKey + '"]').forEach(function (el) {
+        el.style.display = showShared ? '' : 'none';
+        if (showShared) {
+          var inputEl = el.querySelector('input[type="number"]');
+          if (inputEl && (!inputEl.value || inputEl.value === '1' || inputEl.value === '0')) {
+            inputEl.value = '2';
+          }
+        }
+      });
+    }
     window.updateStickyBatchCounts();
   };
 
@@ -551,6 +563,12 @@
     var showShared = type === 'Shared';
     document.querySelectorAll('.shared-only-field[data-row="' + rowKey + '"]').forEach(function (el) {
       el.style.display = showShared ? '' : 'none';
+      if (showShared) {
+        var inputEl = el.querySelector('input[type="number"]');
+        if (inputEl && (!inputEl.value || inputEl.value === '1' || inputEl.value === '0')) {
+          inputEl.value = '2';
+        }
+      }
     });
     // Keep chip UI in sync if select changed programmatically
     var row = document.querySelector('.type-chip-row[data-row="' + rowKey + '"]');
@@ -663,6 +681,45 @@
   window._drawerContactName = '';
   window._drawerSettleNet = 0;
   window._peopleStatusFilter = 'active';
+
+  /* ── Event Delegation for Khata / People Controls ── */
+  document.addEventListener('click', function (e) {
+    var actionBtn = e.target.closest('[data-action]');
+    if (!actionBtn) return;
+
+    var action = actionBtn.getAttribute('data-action');
+    var card = actionBtn.closest('.contact-card');
+
+    var contactId = actionBtn.getAttribute('data-contact-id') || (card && card.getAttribute('data-contact-id'));
+    var contactName = actionBtn.getAttribute('data-contact-name') || (card && card.getAttribute('data-contact-name'));
+
+    if (action === 'open-drawer') {
+      window.openLedgerDrawer(contactId, contactName);
+    } else if (action === 'edit-contact') {
+      var aliases = actionBtn.getAttribute('data-aliases') || (card && card.getAttribute('data-aliases-raw')) || (card && card.getAttribute('data-aliases')) || '';
+      var notes = actionBtn.getAttribute('data-notes') || (card && card.getAttribute('data-notes')) || '';
+      window.openEditContactModal(contactId, contactName, aliases, notes);
+    } else if (action === 'add-ledger') {
+      window.openAddLedgerModal(contactId, contactName);
+    } else if (action === 'open-modal') {
+      var modalId = actionBtn.getAttribute('data-modal-id');
+      if (modalId) window.openPeopleModal(modalId);
+    } else if (action === 'close-modal') {
+      var closeModalId = actionBtn.getAttribute('data-modal-id');
+      if (closeModalId) window.closePeopleModal(closeModalId);
+    } else if (action === 'close-drawer') {
+      window.closeLedgerDrawer();
+    } else if (action === 'filter-status') {
+      var filterVal = actionBtn.getAttribute('data-filter');
+      window.filterPeopleStatus(filterVal, actionBtn);
+    }
+  });
+
+  document.addEventListener('input', function (e) {
+    if (e.target && (e.target.id === 'contact-search-input' || e.target.getAttribute('data-action') === 'search-contacts')) {
+      window.filterPeopleList();
+    }
+  });
 
   window.openPeopleModal = function (id) {
     var el = document.getElementById(id);

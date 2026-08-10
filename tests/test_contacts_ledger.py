@@ -178,3 +178,55 @@ def test_legacy_schema_migration_backfills_direction():
     bal2 = calculate_contact_balance(connection, 1)
     assert bal2["net_balance"] == 2000.0
     connection.close()
+
+
+def test_render_contacts_section_modular_components():
+    from expense_tracker.templates import (
+        render_contacts_section,
+        _render_contact_card,
+        _render_people_toolbar,
+        _render_add_contact_modal,
+        _render_edit_contact_modal,
+        _render_add_ledger_modal,
+        _render_ledger_drawer,
+    )
+
+    contacts_data = [
+        {
+            "contact": {"id": 1, "name": "Ananthu", "aliases": ["anandu"], "notes": "Friend"},
+            "balance": {"net_balance": 1500, "entry_count": 3, "total_you_sent": 2000, "total_they_sent": 500},
+        }
+    ]
+
+    card_html = _render_contact_card(contacts_data[0])
+    assert 'data-action="open-drawer"' in card_html
+    assert 'data-action="edit-contact"' in card_html
+    assert 'data-action="add-ledger"' in card_html
+    assert 'data-contact-id="1"' in card_html
+    assert 'data-contact-name="Ananthu"' in card_html
+
+    toolbar_html = _render_people_toolbar()
+    assert 'data-action="search-contacts"' in toolbar_html
+    assert 'data-action="filter-status"' in toolbar_html
+    assert 'data-action="open-modal"' in toolbar_html
+
+    add_modal_html = _render_add_contact_modal()
+    assert 'id="modal-add-contact"' in add_modal_html
+    assert 'data-action="close-modal"' in add_modal_html
+
+    edit_modal_html = _render_edit_contact_modal()
+    assert 'id="modal-edit-contact"' in edit_modal_html
+    assert 'data-action="close-modal"' in edit_modal_html
+
+    ledger_modal_html = _render_add_ledger_modal()
+    assert 'id="modal-add-ledger"' in ledger_modal_html
+    assert 'data-action="close-modal"' in ledger_modal_html
+
+    drawer_html = _render_ledger_drawer()
+    assert 'id="ledger-drawer"' in drawer_html
+    assert 'data-action="close-drawer"' in drawer_html
+
+    full_html = render_contacts_section(contacts_data, passthrough_candidates=[])
+    assert "People" in full_html
+    assert 'data-action="open-drawer"' in full_html
+
