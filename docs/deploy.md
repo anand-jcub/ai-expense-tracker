@@ -112,7 +112,7 @@ Then: `Authorization: Bearer exp_…` on `/api/*`.
 | 0 | Container + volume (this doc) |
 | 1 | API tokens ✅ + static React on Cloudflare Pages |
 | 2 | Neon/Turso instead of SQLite volume |
-| 3 | MCP (read-only balances first) |
+| 3 | MCP stdio tools ✅ — see [mcp.md](mcp.md) |
 | 4 | PWA mobile |
 | 5 | AI agent via same tools/APIs |
 
