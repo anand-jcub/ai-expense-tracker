@@ -1,7 +1,7 @@
-# Fly.io Phase 0 config (install flyctl, then: fly launch --no-deploy && fly volumes create … && fly deploy)
-# Docs: docs/deploy.md
+# Fly.io deploy — run .\deploy.ps1 from an interactive terminal (browser login).
+# Remote builder: no local Docker required.
 
-app = "expense-tracker-anand"  # change if taken
+app = "expense-tracker-anand"
 primary_region = "sin"
 
 [build]
@@ -9,6 +9,7 @@ primary_region = "sin"
 
 [env]
   HOST = "0.0.0.0"
+  PORT = "8080"
   DATA_DIR = "/data"
   ENV = "production"
   COOKIE_SECURE = "1"
@@ -21,12 +22,19 @@ primary_region = "sin"
   min_machines_running = 0
   processes = ["app"]
 
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/api/health"
+
 [[vm]]
   memory = "512mb"
   cpu_kind = "shared"
   cpus = 1
 
-# Uncomment after: fly volumes create expensedata --region sin --size 1
-# [[mounts]]
-#   source = "expensedata"
-#   destination = "/data"
+# Created by deploy.ps1: fly volumes create expensedata --region sin --size 1
+[[mounts]]
+  source = "expensedata"
+  destination = "/data"

@@ -55,36 +55,42 @@ gcloud run deploy expense-tracker \
 - Attach a **persistent volume** / mount GCS bucket to `DATA_DIR`, or  
 - Plan **Phase 2 Neon Postgres** before real multi-device use.
 
-## Fly.io (volume-friendly)
+## Fly.io (recommended for this machine)
 
-```bash
-fly launch --no-deploy
-# set volume in fly.toml for /data
-fly volumes create expensedata --size 1
-fly secrets set ENV=production COOKIE_SECURE=1
-fly deploy
+`flyctl` is installable via winget. **No local Docker** — Fly uses a remote builder.
+
+### One command (interactive Windows Terminal)
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
+.\deploy.ps1
 ```
 
-`fly.toml` sketch:
+This will:
 
-```toml
-[env]
-  HOST = "0.0.0.0"
-  DATA_DIR = "/data"
-  ENV = "production"
-  COOKIE_SECURE = "1"
+1. Install/login to Fly (browser)  
+2. Create app + 1GB volume `expensedata`  
+3. `fly deploy --remote-only`  
+4. Open `https://<app>.fly.dev`
 
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = "stop"
-  auto_start_machines = true
-  min_machines_running = 0
+### Manual steps
 
-[mounts]
-  source = "expensedata"
-  destination = "/data"
+```powershell
+winget install --id Fly-io.flyctl -e
+# restart terminal, then:
+flyctl auth login
+flyctl apps create expense-tracker-anand --org personal
+flyctl volumes create expensedata --region sin --size 1 -a expense-tracker-anand -y
+flyctl deploy --remote-only
 ```
+
+### GitHub Actions (optional)
+
+1. Locally: `flyctl tokens create deploy -x 999999h`  
+2. GitHub → repo **Settings → Secrets → Actions** → `FLY_API_TOKEN`  
+3. Push to `master` or run workflow **Fly Deploy**
+
+`fly.toml` is already in the repo with `/data` mount + health check on `/api/health`.
 
 ## After deploy
 
