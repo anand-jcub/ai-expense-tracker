@@ -26,6 +26,19 @@ http://127.0.0.1:8765
 
 One-shot (no auto-restart): `.\venv\Scripts\python.exe app.py`
 
+## Hosted (Phase 0)
+
+Container deploy (Cloud Run / Fly) with SQLite on a volume:
+
+- Guide: **[docs/deploy.md](docs/deploy.md)**
+- Env: `PORT`, `HOST=0.0.0.0`, `DATA_DIR`, `COOKIE_SECURE=1`, `ENV=production`
+
+```powershell
+docker build -t expense-tracker .
+```
+
+API tokens (MCP / mobile): **[docs/api.md](docs/api.md)** — `POST /api/token`, then `Authorization: Bearer …`.
+
 ## What Phase 1 Supports
 
 - Password-protected SBI PDF import through `pdfplumber`.

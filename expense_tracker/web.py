@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import sys
 import urllib.parse
@@ -19,10 +20,13 @@ from pypdf.errors import PdfReadError
 
 from .auth import (
     authenticate_user,
+    create_api_token,
     delete_session,
     get_all_usernames,
     init_auth_db,
     register_user,
+    revoke_api_token,
+    verify_api_token,
     verify_session,
 )
 from .db import (
@@ -101,7 +105,13 @@ class ExpenseHandler(BaseHTTPRequestHandler):
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def get_session_username(self) -> str | None:
-        """Return the username associated with the current session cookie, or None."""
+        """Username from session cookie or Authorization: Bearer <api_token>."""
+        auth = (self.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+            user = verify_api_token(token)
+            if user:
+                return user
         cookie_header = self.headers.get("Cookie", "")
         for part in cookie_header.split(";"):
             part = part.strip()
@@ -111,6 +121,27 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             if part.startswith("session_id="):
                 session_id = part[len("session_id="):]
                 return verify_session(session_id)
+        return None
+
+    def _wants_json(self) -> bool:
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/api/"):
+            return True
+        accept = (self.headers.get("Accept") or "").lower()
+        return "application/json" in accept
+
+    def _require_user(self) -> str | None:
+        """Return username or send 401/redirect and return None."""
+        username = self.get_session_username()
+        if username:
+            return username
+        if self._wants_json():
+            self.respond_json(
+                {"error": "Unauthorized", "hint": "Use session cookie or Authorization: Bearer <token>"},
+                status=401,
+            )
+        else:
+            self.redirect(path="/login")
         return None
 
     def get_session_id(self) -> str | None:
@@ -135,6 +166,28 @@ class ExpenseHandler(BaseHTTPRequestHandler):
 
     def _db_path_for(self, username: str) -> Path:
         return DATA_DIR / f"expenses_{username.lower()}.db"
+
+    def _session_cookie(self, session_id: str = "", *, clear: bool = False) -> str:
+        """Build Set-Cookie; add Secure when COOKIE_SECURE=1 or ENV=production."""
+        secure = os.environ.get("COOKIE_SECURE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        } or os.environ.get("ENV", "").strip().lower() in {"prod", "production"}
+        if clear:
+            parts = ["session=", "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"]
+        else:
+            parts = [
+                f"session={session_id}",
+                "Path=/",
+                "HttpOnly",
+                "SameSite=Lax",
+                "Max-Age=2592000",
+            ]
+        if secure:
+            parts.append("Secure")
+        return "; ".join(parts)
 
     def _safe_write(self, body: bytes | None = None) -> None:
         try:
@@ -291,18 +344,26 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 self.serve_frontend(parsed.path)
                 return
 
-            # Auth pages
+            # Auth pages / health — no auth
             if parsed.path == "/login":
                 self.respond_html(login_page())
                 return
             if parsed.path == "/register":
                 self.respond_html(register_page())
                 return
+            if parsed.path == "/api/health":
+                self.respond_json(
+                    {
+                        "ok": True,
+                        "service": "expense-tracker",
+                        "data_dir": str(DATA_DIR),
+                    }
+                )
+                return
 
-            # Session check for all other pages
-            username = self.get_session_username()
+            # Session or Bearer token for everything else
+            username = self._require_user()
             if not username:
-                self.redirect(path="/login")
                 return
 
             if parsed.path == "/api/contacts/ledger":
@@ -399,13 +460,18 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             if self.path == "/logout":
                 self.handle_logout()
                 return
-
-            # All other POST endpoints require a session
-            username = self.get_session_username()
-            if not username:
-                self.redirect(path="/login")
+            if self.path == "/api/token":
+                self.handle_api_token_create()
                 return
 
+            # All other POST endpoints require session or Bearer token
+            username = self._require_user()
+            if not username:
+                return
+
+            if self.path == "/api/token/revoke":
+                self.handle_api_token_revoke(username)
+                return
             if self.path == "/import":
                 self.handle_import(username)
             elif self.path == "/manual":
@@ -466,10 +532,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 pass
             self.send_response(303)
             self.send_header("Location", "/")
-            self.send_header(
-                "Set-Cookie",
-                f"session={session_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000",
-            )
+            self.send_header("Set-Cookie", self._session_cookie(session_id))
             self.end_headers()
             self.wfile.flush()
         else:
@@ -499,12 +562,80 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         delete_session(session_id)
         self.send_response(303)
         self.send_header("Location", "/login")
-        self.send_header("Set-Cookie", "session=; Path=/; HttpOnly; Max-Age=0")
+        self.send_header("Set-Cookie", self._session_cookie(clear=True))
         self.end_headers()
         self.wfile.flush()
 
     def handle_logout_get(self) -> None:
         self.handle_logout()
+
+    def handle_api_token_create(self) -> None:
+        """POST /api/token — exchange username/password for a Bearer API token."""
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        ctype = (self.headers.get("Content-Type") or "").lower()
+        username = password = label = ""
+        days_valid = 90
+        try:
+            if "application/json" in ctype:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+                username = str(payload.get("username") or "")
+                password = str(payload.get("password") or "")
+                label = str(payload.get("label") or "api")
+                days_valid = int(payload.get("days_valid") or 90)
+            else:
+                params = urllib.parse.parse_qs(raw.decode("utf-8"))
+                username = params.get("username", [""])[0]
+                password = params.get("password", [""])[0]
+                label = params.get("label", ["api"])[0]
+                days_raw = params.get("days_valid", ["90"])[0]
+                days_valid = int(days_raw) if str(days_raw).isdigit() else 90
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+            self.respond_json({"error": "Invalid body"}, status=400)
+            return
+
+        token, msg = create_api_token(
+            username, password, label=label, days_valid=days_valid
+        )
+        if not token:
+            self.respond_json({"error": msg}, status=401)
+            return
+        self.respond_json(
+            {
+                "token": token,
+                "token_type": "Bearer",
+                "message": msg,
+                "usage": "Authorization: Bearer <token>",
+            }
+        )
+
+    def handle_api_token_revoke(self, username: str) -> None:
+        """POST /api/token/revoke — revoke current Bearer token (or body token)."""
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b""
+        token = ""
+        auth = (self.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+        if not token and raw:
+            ctype = (self.headers.get("Content-Type") or "").lower()
+            try:
+                if "application/json" in ctype:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                    token = str(payload.get("token") or "")
+                else:
+                    params = urllib.parse.parse_qs(raw.decode("utf-8"))
+                    token = params.get("token", [""])[0]
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+        if not token:
+            self.respond_json({"error": "No token provided"}, status=400)
+            return
+        ok = revoke_api_token(username, token)
+        if ok:
+            self.respond_json({"ok": True, "message": "Token revoked."})
+        else:
+            self.respond_json({"error": "Token not found or already revoked"}, status=404)
 
     # ── Data handlers ─────────────────────────────────────────────────────────
 
@@ -1262,11 +1393,36 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         )
 
 
-def run(host: str = "127.0.0.1", port: int = 8765) -> None:
+def run(host: str | None = None, port: int | None = None) -> None:
+    """Start the HTTP server.
+
+    Env (hosting):
+      HOST          bind address (default 0.0.0.0 for containers; use 127.0.0.1 locally if preferred)
+      PORT          listen port (default 8765; Cloud Run sets PORT)
+      DATA_DIR      SQLite directory (default ./data; mount a volume in production)
+      COOKIE_SECURE 1/true → Secure cookies (use behind HTTPS)
+      ENV           production → also enables Secure cookies
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if host is None:
+        host = (os.environ.get("HOST") or "0.0.0.0").strip() or "0.0.0.0"
+    if port is None:
+        port = int((os.environ.get("PORT") or "8765").strip() or "8765")
+
+    # Re-resolve DATA_DIR in case env was set after import (container entrypoints)
+    from . import db as db_mod
+    from . import auth as auth_mod
+
+    data_dir = Path(os.environ.get("DATA_DIR") or db_mod.DATA_DIR).expanduser().resolve()
+    db_mod.DATA_DIR = data_dir
+    db_mod.DB_PATH = data_dir / "expenses.db"
+    auth_mod.DATA_DIR = data_dir
+    auth_mod.USERS_DB_PATH = data_dir / "users.db"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
     init_auth_db()
     try:
         server = DualStackServer((host, port), ExpenseHandler)
@@ -1275,8 +1431,9 @@ def run(host: str = "127.0.0.1", port: int = 8765) -> None:
         logger.error("Could not bind %s:%s — %s", host, port, exc)
         raise
     logger.info("Expense tracker running at http://%s:%d (Dual IPv4/IPv6)", host, port)
-    logger.info("Database: %s", DATA_DIR)
+    logger.info("Database: %s", data_dir)
     print(f"Expense tracker running at http://{host}:{port}", flush=True)
+    print(f"DATA_DIR={data_dir}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

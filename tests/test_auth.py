@@ -9,10 +9,13 @@ from unittest.mock import MagicMock, patch
 from expense_tracker import auth, db, web
 from expense_tracker.auth import (
     authenticate_user,
+    create_api_token,
     delete_session,
     hash_password,
     init_auth_db,
     register_user,
+    revoke_api_token,
+    verify_api_token,
     verify_password,
     verify_session,
 )
@@ -152,6 +155,16 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(rows[0]["source_filename"], "bob_statement.pdf")
         finally:
             conn_bob.close()
+
+    def test_api_token_create_verify_revoke(self) -> None:
+        register_user("tokuser", "tokpass1")
+        token, msg = create_api_token("tokuser", "tokpass1", label="test")
+        self.assertIsNotNone(token)
+        self.assertTrue(str(token).startswith("exp_"))
+        self.assertEqual(verify_api_token(token), "tokuser")
+        self.assertIsNone(verify_api_token("exp_notreal"))
+        self.assertTrue(revoke_api_token("tokuser", token))
+        self.assertIsNone(verify_api_token(token))
 
     def test_handler_authentication_flow(self) -> None:
         # Test get_session_username and check_authentication inside Handler mock

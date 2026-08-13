@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import uuid
@@ -25,7 +26,17 @@ from .classifier import (
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = APP_ROOT / "data"
+
+
+def _resolve_data_dir() -> Path:
+    """DATA_DIR env for containers/volumes; default repo data/."""
+    raw = (os.environ.get("DATA_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (APP_ROOT / "data").resolve()
+
+
+DATA_DIR = _resolve_data_dir()
 DB_PATH = DATA_DIR / "expenses.db"
 
 
@@ -915,7 +926,7 @@ def dashboard_data(conn: sqlite3.Connection) -> dict:
     return {
         "transactions": rows,
         "pending": pending,
-        "shared": shared[:15],
+        "shared": shared,
         "top_merchants": sorted(by_merchant.items(), key=lambda item: item[1], reverse=True)[:10],
         "rules": rules,
         "suggestions": get_connection_suggestions(conn),
