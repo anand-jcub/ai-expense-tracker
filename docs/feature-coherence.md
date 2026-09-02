@@ -30,11 +30,13 @@ Update this file when you intentionally add a new multi-surface feature.
 | Surface | Location | Expected behavior |
 |---------|----------|-------------------|
 | Period metrics | Home: credits / debits / my expenses cards | Totals for selected range only |
-| Credit/debit pie | Home chart | Same filtered rows |
+| Monthly expense trend | Home chart | Monthly breakdown of personal spend / debits / credits |
 | Category chart | Home chart | Same filtered rows |
 | Top merchants chart | Home chart | Same filtered rows |
 | Period empty state | Home “no spend data” | Based on same filtered totals |
 | Any subsection labeled “this period” / “period” | Home pane | Same dates |
+| Unified transactions ("All" / "Classified" tabs) | Transactions workspace | Render all in-period rows with ZERO hardcoded slice limits (no `[:40]` or `[:50]`) |
+| Money Flow visualizer | Money Flow section | Render all in-period flow rows with ZERO hardcoded slice limits |
 
 ### Must cover if the UI implies period linkage
 
@@ -60,6 +62,7 @@ Update this file when you intentionally add a new multi-surface feature.
 - [ ] Checkbox `exclude_business` applied in the same `filter_dashboard_rows` call as dates
 - [ ] Form GET preserves `start_date`/`end_date` when navigating tabs (or state is re-read from query)
 - [ ] React `/app` Home (if it shows period charts) uses the same API params or documents divergence
+- [ ] No hardcoded list slicing (`[:N]`) inside rendering templates (`templates.py`) for in-period collections
 
 ### Incomplete example (FAIL)
 
@@ -85,6 +88,39 @@ Update this file when you intentionally add a new multi-surface feature.
 ### Proof
 
 - [ ] Single filter function applies business exclusion; no chart bypasses it
+
+---
+
+## FC-04 — Statement import visible everywhere
+
+**Trigger:** Statement imported (UI PDF or WhatsApp mail).
+
+**Shared state:** last import `{import_id, filename, start, end}` (`import_ingest` / `.last_import_{user}.json`).
+
+### Must cover
+
+| Surface | Expected |
+|---------|----------|
+| Home period | Default dates = last statement span (unless user picked dates) |
+| Home metrics + charts | Same period (`filter_dashboard_rows`) |
+| Money flow | Same `tx_source` as that period |
+| Transactions / Last statement | Review + auto rows for that `import_id` |
+| Recent imports | File listed |
+| Export / search | All imported rows in DB |
+
+### May ignore
+
+- Khata nets (no auto-debt)
+- React `/app`
+- Cloud MCP until `sync-cloud`
+
+### Proof
+
+- [ ] No explicit dates → `start_date`/`end_date` from last import
+- [ ] Money flow uses `tx_source` (period), not a second unfiltered list
+- [ ] `tx_filter=last_statement` shows both needs_review and auto
+- [ ] Classified / Shared / Last statement share one `workspace_rows` list
+- [ ] Amount column is bank debit/credit, not my_share
 
 ---
 
@@ -161,10 +197,124 @@ Update this file when you intentionally add a new multi-surface feature.
 - If classic Home shows period charts, React Home either:
   - uses the same APIs/filters, **or**
   - is clearly labeled “preview / partial” and listed under May ignore in this file
+- Mobile `/app` v1 Home is **glance only** (totals + review count + top balances). It uses `GET /api/dashboard/summary` (FC-07), not a second filter.
+
+### May ignore
+
+- Classic charts / money-flow / full transaction workspace (desktop)
+- People / ledger / graphs screens (registered, `enabled: false` until a later increment)
 
 ### Proof
 
 - [ ] No silent dual behavior for the same user story without a note here
+- [ ] `/app` nav comes from `frontend/src/features/registry.js`
+
+---
+
+## FC-07 — Mobile Home + Ask + future Graphs share one dashboard summary
+
+**Trigger:** Mobile Home, assistant “food this month”, or a future Graphs screen needs period spend.
+
+**Shared state:** `start_date`, `end_date`, `exclude_business` applied inside `services.dashboard_summary_payload`.
+
+### Must cover
+
+| Surface | Expected |
+|---------|----------|
+| `GET /api/dashboard/summary` | Payload from `dashboard_summary_payload` |
+| MCP `get_dashboard_summary` | Same function |
+| Assistant tool `get_dashboard_summary` | Same function |
+| Mobile Home glance | Same API (current month, exclude business default) |
+| Future Graphs | Same API / same params — do not fork filters |
+
+### May ignore
+
+- Classic Home HTML still calls `filter_dashboard_rows` directly (same filter function, not the JSON payload)
+- Khata balances (period-independent)
+
+### Proof
+
+- [ ] MCP + HTTP + assistant do not re-copy filter math
+- [ ] `by_category` uses `expenses_by_category` on the same filtered rows
+
+---
+
+## FC-08 — Assistant money writes require confirmation
+
+**Trigger:** Ask proposes add/classify (or any cash mutation).
+
+**Shared state:** single-use `confirm_token` bound to the user.
+
+### Must cover
+
+| Surface | Expected |
+|---------|----------|
+| `propose_add_manual` | Preview only — no `add_manual_transaction` until confirm |
+| `POST /api/assistant/confirm` | Executes once, then token dies |
+| Ask confirmation card | Confirm / Cancel; past cards disabled |
+
+### May ignore
+
+- `POST /api/manual` from the Add form (the form **is** the confirmation)
+
+### Proof
+
+- [ ] Unit test: propose does not insert; confirm inserts once; second confirm fails
+
+---
+
+## FC-09 — Live vs snapshot share the same mobile APIs
+
+**Trigger:** Phone uses `/app` on the PC (live) or on the Worker (PC off).
+
+**Shared state:** `GET /api/dashboard/summary` and `GET /api/settlement/summary` shapes. Snapshot `dashboard` comes from `dashboard_summary_payload` at sync time.
+
+### Must cover
+
+| Surface | Expected |
+|---------|----------|
+| Live Python `/api/dashboard/summary` | `dashboard_summary_payload` |
+| `sync-cloud` snapshot `dashboard` | Same function |
+| Worker `GET /api/dashboard/summary` | Glance only — do not parse `transactions` |
+| Mobile Home | Same fields; shows “as of” when `mode=snapshot` |
+| Worker Ask | Glance balances + `by_category` |
+| Live Ask | Live SQLite tools |
+
+### May ignore
+
+- Gemini / Add / import when `mode=snapshot` (writes stay on PC)
+- Worker period query params (glance is last synced month)
+
+### Proof
+
+- [ ] Worker REST does not `JSON.parse` the full snapshot key for Home
+- [ ] Add is disabled in snapshot mode
+
+---
+
+## FC-10 — Ask reads go through `ask_books`
+
+**Trigger:** Any Ask question about spends, merchants, dates, amounts, or khata.
+
+**Shared state:** `expense_tracker.assistant.query.ask_books`.
+
+### Must cover
+
+| Surface | Expected |
+|---------|----------|
+| Local router | `parse_question` → `ask_books` |
+| Gemini tool `ask_books` | Same function |
+| Worker snapshot Ask | Glance `books` (90-day slim), same kinds of answers |
+
+### May ignore
+
+- MCP stdio tools (may keep older names)
+- Classic `/` search
+
+### Proof
+
+- [ ] Empty Gemini after a tool uses the tool `answer`
+- [ ] No full transaction dump in Gemini payloads
 
 ---
 

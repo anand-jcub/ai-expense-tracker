@@ -23,9 +23,15 @@ from .auth import (
     create_api_token,
     delete_session,
     get_all_usernames,
+    get_gemini_api_key,
+    get_gmail_imap,
+    get_statement_password,
     init_auth_db,
     register_user,
     revoke_api_token,
+    set_gemini_api_key,
+    set_gmail_imap,
+    set_statement_password,
     verify_api_token,
     verify_session,
 )
@@ -37,8 +43,7 @@ from .db import (
     connect,
     dashboard_data,
     delete_merchant_rule,
-    file_sha256,
-    import_transactions,
+    export_rows,
     init_db,
     onboarding_status,
     remove_transaction_link,
@@ -50,9 +55,10 @@ from .services import (
     CATEGORIES,
     EXPENSE_TYPES,
     compute_partner_balances,
+    dashboard_summary_payload,
     split_ratio_from_people,
 )
-from .sbi_pdf import extract_transactions_from_bytes
+from .import_ingest import import_statement_bytes, read_last_import
 from .templates import login_page, page, register_page
 
 logger = logging.getLogger(__name__)
@@ -141,7 +147,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 status=401,
             )
         else:
-            self.redirect(path="/login")
+            nxt = "/app/" if self._is_mobile() else ""
+            login = "/login?next=/app/" if nxt else "/login"
+            self.redirect(path=login)
         return None
 
     def get_session_id(self) -> str | None:
@@ -166,6 +174,19 @@ class ExpenseHandler(BaseHTTPRequestHandler):
 
     def _db_path_for(self, username: str) -> Path:
         return DATA_DIR / f"expenses_{username.lower()}.db"
+
+    def _is_mobile(self) -> bool:
+        ua = (self.headers.get("User-Agent") or "").lower()
+        return any(token in ua for token in ("iphone", "android", "ipad", "mobile"))
+
+    @staticmethod
+    def _safe_next(raw: str) -> str:
+        path = (raw or "").strip()
+        if not path.startswith("/") or path.startswith("//") or "\\" in path:
+            return ""
+        if path.startswith("/login") or path.startswith("/register"):
+            return ""
+        return path
 
     def _session_cookie(self, session_id: str = "", *, clear: bool = False) -> str:
         """Build Set-Cookie; add Secure when COOKIE_SECURE=1 or ENV=production."""
@@ -216,8 +237,16 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         except _CLIENT_GONE:
             logger.debug("Client gone during respond_html")
 
-    def redirect(self, message: str | None = None, error: str | None = None, path: str = "/", tab: str | None = None) -> None:
-        query = urllib.parse.urlencode({k: v for k, v in {"message": message, "error": error}.items() if v})
+    def redirect(
+        self,
+        message: str | None = None,
+        error: str | None = None,
+        path: str = "/",
+        tab: str | None = None,
+        tx_filter: str | None = None,
+    ) -> None:
+        q = {k: v for k, v in {"message": message, "error": error, "tx_filter": tx_filter}.items() if v}
+        query = urllib.parse.urlencode(q)
         hash_suffix = f"#{tab}" if tab else ""
         target = f"{path}?{query}{hash_suffix}" if query else f"{path}{hash_suffix}"
         try:
@@ -292,6 +321,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             ".jpeg": "image/jpeg",
             ".woff2": "font/woff2",
             ".json": "application/json",
+            ".webmanifest": "application/manifest+json",
         }.get(suffix, "application/octet-stream")
         body = candidate.read_bytes()
         self.send_response(200)
@@ -311,6 +341,246 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         except Exception:
             logger.exception("onboarding API failed")
             self.respond_json({"error": "Failed to load onboarding"}, status=500)
+
+    def _read_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        raw = self.rfile.read(length) if length else b""
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise ValueError("JSON object required")
+        return data
+
+    def handle_api_meta(self) -> None:
+        self.respond_json({"categories": CATEGORIES, "expense_types": EXPENSE_TYPES})
+
+    def handle_api_dashboard_summary(self, username: str, params: dict) -> None:
+        start = (params.get("start_date") or params.get("start") or [""])[0]
+        end = (params.get("end_date") or params.get("end") or [""])[0]
+        raw_ex = (params.get("exclude_business") or ["1"])[0]
+        exclude = str(raw_ex).lower() not in {"0", "false", "no", "off"}
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                payload = dashboard_summary_payload(
+                    conn,
+                    start_date=start or None,
+                    end_date=end or None,
+                    exclude_business=exclude,
+                )
+            self.respond_json(payload)
+        except Exception:
+            logger.exception("dashboard summary API failed")
+            self.respond_json({"error": "Failed to load dashboard summary"}, status=500)
+
+    def handle_api_manual(self, username: str) -> None:
+        try:
+            body = self._read_json_body()
+        except ValueError as exc:
+            self.respond_json({"error": str(exc)}, status=400)
+            return
+        try:
+            txn_date = str(body.get("txn_date") or "").strip() or date.today().isoformat()
+            date.fromisoformat(txn_date)
+            description = str(body.get("description") or "").strip()
+            if not description:
+                raise ValueError("Enter a description.")
+            amount = Decimal(str(body.get("amount")))
+            direction = str(body.get("direction") or "debit").strip()
+            category = str(body.get("category") or "").strip()
+            expense_type = str(body.get("expense_type") or "Personal").strip()
+            if not category or expense_type not in EXPENSE_TYPES:
+                raise ValueError("Choose a category and expense type.")
+            split_ratio = split_ratio_from_people(body.get("split_people") or 1)
+            notes = str(body.get("notes") or "").strip() or None
+            learn = bool(body.get("learn"))
+        except (ValueError, InvalidOperation) as exc:
+            self.respond_json({"error": str(exc)}, status=400)
+            return
+        db_path = self._db_path_for(username)
+        try:
+            with connect(db_path) as conn:
+                txn_id = add_manual_transaction(
+                    conn,
+                    txn_date,
+                    description,
+                    amount,
+                    direction,
+                    category,
+                    expense_type,
+                    split_ratio,
+                    notes,
+                    learn,
+                    uploaded_by=username,
+                )
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
+            self.respond_json({"ok": True, "transaction_id": txn_id})
+        except ValueError as exc:
+            self.respond_json({"error": str(exc)}, status=400)
+        except Exception:
+            logger.exception("api manual failed")
+            self.respond_json({"error": "Failed to add entry"}, status=500)
+
+    def handle_api_assistant_chat(self, username: str) -> None:
+        try:
+            body = self._read_json_body()
+        except ValueError as exc:
+            self.respond_json({"error": str(exc)}, status=400)
+            return
+        message = str(body.get("message") or body.get("q") or "").strip()
+        history = body.get("history") if isinstance(body.get("history"), list) else []
+        from .assistant import run_chat
+
+        try:
+            payload = run_chat(self._db_path_for(username), username, message, history)
+            self.respond_json(payload)
+        except Exception:
+            logger.exception("assistant chat failed")
+            self.respond_json({"error": "Assistant failed", "reply": "Something went wrong."}, status=500)
+
+    def handle_api_assistant_confirm(self, username: str) -> None:
+        try:
+            body = self._read_json_body()
+        except ValueError as exc:
+            self.respond_json({"error": str(exc)}, status=400)
+            return
+        token = str(body.get("confirm_token") or body.get("token") or "").strip()
+        from .assistant import confirm_action
+
+        try:
+            payload = confirm_action(self._db_path_for(username), username, token)
+            status = 200 if payload.get("ok") else 400
+            self.respond_json(payload, status=status)
+        except Exception:
+            logger.exception("assistant confirm failed")
+            self.respond_json({"ok": False, "error": "Confirm failed"}, status=500)
+
+    def _filter_export_rows(
+        self,
+        rows: list[dict],
+        start_date: str = "",
+        end_date: str = "",
+        query: str = "",
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Filter export_rows like dashboard period + text search (for AI / API)."""
+        start_date = (start_date or "").strip()
+        end_date = (end_date or "").strip()
+        q = (query or "").strip().lower()
+        out: list[dict] = []
+        for row in rows:
+            d = str(row.get("txn_date") or "")
+            if start_date and d < start_date:
+                continue
+            if end_date and d > end_date:
+                continue
+            if q:
+                blob = " ".join(
+                    str(row.get(k) or "")
+                    for k in (
+                        "merchant_display",
+                        "description",
+                        "category",
+                        "expense_type",
+                        "notes",
+                        "reference",
+                    )
+                ).lower()
+                if q not in blob:
+                    continue
+            # JSON-safe numbers
+            item = dict(row)
+            for k, v in list(item.items()):
+                if isinstance(v, Decimal):
+                    item[k] = float(v)
+            out.append(item)
+            if limit is not None and len(out) >= limit:
+                break
+        return out
+
+    def handle_api_export(self, username: str, kind: str, params: dict) -> None:
+        """GET /api/export.json|csv — same rows as dashboard export; Bearer OK."""
+        start = (params.get("start_date") or params.get("start") or [""])[0]
+        end = (params.get("end_date") or params.get("end") or [""])[0]
+        q = (params.get("q") or params.get("query") or [""])[0]
+        limit_raw = (params.get("limit") or [""])[0]
+        limit = None
+        if str(limit_raw).strip().isdigit():
+            limit = max(1, min(int(limit_raw), 5000))
+        try:
+            db_path = self._db_path_for(username)
+            with connect(db_path) as conn:
+                rows = export_rows(conn)
+            filtered = self._filter_export_rows(rows, start, end, q, limit)
+            if kind == "csv":
+                import csv
+                import io
+
+                buf = io.StringIO()
+                if filtered:
+                    writer = csv.DictWriter(buf, fieldnames=list(filtered[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(filtered)
+                body = buf.getvalue().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header(
+                    "Content-Disposition", 'attachment; filename="transactions.csv"'
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.respond_json(
+                    {
+                        "username": username,
+                        "count": len(filtered),
+                        "start_date": start or None,
+                        "end_date": end or None,
+                        "query": q or None,
+                        "transactions": filtered,
+                    }
+                )
+        except Exception:
+            logger.exception("export API failed")
+            self.respond_json({"error": "Failed to export transactions"}, status=500)
+
+    def handle_api_transactions(self, username: str, params: dict) -> None:
+        """GET /api/transactions — filtered export rows for agents (default limit 50)."""
+        start = (params.get("start_date") or params.get("start") or [""])[0]
+        end = (params.get("end_date") or params.get("end") or [""])[0]
+        q = (params.get("q") or params.get("query") or [""])[0]
+        limit_raw = (params.get("limit") or ["50"])[0]
+        try:
+            limit = max(1, min(int(limit_raw or 50), 500))
+        except ValueError:
+            limit = 50
+        try:
+            db_path = self._db_path_for(username)
+            with connect(db_path) as conn:
+                rows = export_rows(conn)
+            # newest first for agent browse
+            rows = list(reversed(rows))
+            filtered = self._filter_export_rows(rows, start, end, q, limit)
+            self.respond_json(
+                {
+                    "username": username,
+                    "count": len(filtered),
+                    "start_date": start or None,
+                    "end_date": end or None,
+                    "query": q or None,
+                    "transactions": filtered,
+                }
+            )
+        except Exception:
+            logger.exception("transactions API failed")
+            self.respond_json({"error": "Failed to list transactions"}, status=500)
 
     def multipart(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -346,7 +616,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
 
             # Auth pages / health — no auth
             if parsed.path == "/login":
-                self.respond_html(login_page())
+                nxt = self._safe_next((params.get("next") or [""])[0])
+                if not nxt and self._is_mobile():
+                    nxt = "/app/"
+                self.respond_html(login_page(next_path=nxt))
                 return
             if parsed.path == "/register":
                 self.respond_html(register_page())
@@ -356,6 +629,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     {
                         "ok": True,
                         "service": "expense-tracker",
+                        "mode": "live",
+                        "writes": True,
                         "data_dir": str(DATA_DIR),
                     }
                 )
@@ -364,6 +639,13 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             # Session or Bearer token for everything else
             username = self._require_user()
             if not username:
+                return
+
+            if parsed.path == "/" and self._is_mobile():
+                self.send_response(302)
+                self.send_header("Location", "/app/")
+                self.end_headers()
+                self._safe_write()
                 return
 
             if parsed.path == "/api/contacts/ledger":
@@ -380,6 +662,21 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/onboarding":
                 self.handle_api_onboarding(username)
+                return
+            if parsed.path == "/api/dashboard/summary":
+                self.handle_api_dashboard_summary(username, params)
+                return
+            if parsed.path == "/api/meta":
+                self.handle_api_meta()
+                return
+            if parsed.path in ("/api/export.json", "/api/export/json"):
+                self.handle_api_export(username, "json", params)
+                return
+            if parsed.path in ("/api/export.csv", "/api/export/csv"):
+                self.handle_api_export(username, "csv", params)
+                return
+            if parsed.path == "/api/transactions":
+                self.handle_api_transactions(username, params)
                 return
 
             if parsed.path == "/":
@@ -410,6 +707,7 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 exclude_business = (
                     "exclude_business" in params if period_touched else True
                 )
+                gmail_addr, gmail_pw = get_gmail_imap(username)
                 self.respond_html(
                     page(
                         data,
@@ -427,6 +725,11 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                         partner_balances=partner_balances,
                         tx_filter=params.get("tx_filter", ["needs_review"])[0],
                         exclude_credits="exclude_credits" in params or params.get("exclude_credits", ["0"])[0] in ("1", "true"),
+                        last_import=read_last_import(username),
+                        gmail_on=bool(gmail_pw),
+                        gmail_address=gmail_addr,
+                        pdf_password_saved=bool(get_statement_password(username)),
+                        gemini_key_saved=bool(get_gemini_api_key(username)),
                     )
                 )
             elif parsed.path == "/export.csv":
@@ -472,8 +775,26 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             if self.path == "/api/token/revoke":
                 self.handle_api_token_revoke(username)
                 return
+            post_path = urllib.parse.urlparse(self.path).path
+            if post_path == "/api/manual":
+                self.handle_api_manual(username)
+                return
+            if post_path == "/api/assistant/chat":
+                self.handle_api_assistant_chat(username)
+                return
+            if post_path == "/api/assistant/confirm":
+                self.handle_api_assistant_confirm(username)
+                return
             if self.path == "/import":
                 self.handle_import(username)
+            elif self.path == "/gmail/connect":
+                self.handle_gmail_connect(username)
+            elif self.path == "/settings/gemini":
+                self.handle_settings_gemini(username)
+            elif self.path == "/import/mail-now":
+                self.handle_mail_now(username)
+            elif self.path == "/api/import/statement":
+                self.handle_api_import_statement(username)
             elif self.path == "/manual":
                 self.handle_manual(username)
             elif self.path == "/review":
@@ -530,13 +851,17 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             db_path = self._db_path_for(username)
             with connect(db_path) as conn:
                 pass
+            nxt = self._safe_next(params.get("next", [""])[0])
+            if not nxt:
+                nxt = "/app/" if self._is_mobile() else "/"
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", nxt)
             self.send_header("Set-Cookie", self._session_cookie(session_id))
             self.end_headers()
             self.wfile.flush()
         else:
-            self.respond_html(login_page(error="Invalid username or password."))
+            nxt = self._safe_next(params.get("next", [""])[0])
+            self.respond_html(login_page(error="Invalid username or password.", next_path=nxt))
 
     def handle_register(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -650,28 +975,113 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             password = password_part.get_content().strip() if password_part else ""
             filename = statement.get_filename() or "statement.pdf"
             content = statement.get_payload(decode=True)
-            temp_path, rows = extract_transactions_from_bytes(content, filename, password=password)
-            try:
-                sha256 = file_sha256(temp_path)
-                db_path = self._db_path_for(username)
-                with connect(db_path) as conn:
-                    _, inserted, parsed = import_transactions(
-                        conn,
-                        filename,
-                        sha256,
-                        rows,
-                        password_used=bool(password),
-                        uploaded_by=username,
-                    )
-                self.redirect(message=f"Parsed {parsed} transactions and imported {inserted} new transactions.")
-            finally:
-                temp_path.unlink(missing_ok=True)
+            result = import_statement_bytes(
+                username, content, filename, typed_password=password
+            )
+            if result.get("already_imported"):
+                self.redirect(
+                    message=f"Already imported ({result['parsed']} transactions in file).",
+                    tab="review",
+                    tx_filter="last_statement",
+                )
+            else:
+                self.redirect(
+                    message=(
+                        f"Parsed {result['parsed']} transactions and imported "
+                        f"{result['inserted']} new. Review and auto are on Last statement."
+                    ),
+                    tab="review",
+                    tx_filter="last_statement",
+                )
         except PdfReadError:
             self.redirect(error="Could not open the PDF. Check the SBI statement password.")
         except ValueError as exc:
             self.redirect(error=str(exc))
         except Exception as exc:
             logger.exception("Unexpected error during import.")
+            self.redirect(error=str(exc))
+
+    def handle_api_import_statement(self, username: str) -> None:
+        """POST /api/import/statement — multipart PDF; uses saved statement password."""
+        try:
+            parts = self.multipart()
+            statement = parts.get("statement") or parts.get("file")
+            if statement is None:
+                self.respond_json({"error": "No PDF (field statement or file)"}, status=400)
+                return
+            password_part = parts.get("password")
+            password = password_part.get_content().strip() if password_part else ""
+            filename = statement.get_filename() or "statement.pdf"
+            content = statement.get_payload(decode=True)
+            result = import_statement_bytes(
+                username, content, filename, typed_password=password
+            )
+            self.respond_json(result)
+        except ValueError as exc:
+            self.respond_json({"error": str(exc)}, status=400)
+        except Exception:
+            logger.exception("API statement import failed")
+            self.respond_json({"error": "Import failed"}, status=500)
+
+    def handle_settings_gemini(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+        key = (params.get("gemini_api_key", [""])[0] or "").strip()
+        if not key:
+            self.redirect(error="Paste a Gemini API key.")
+            return
+        set_gemini_api_key(username, key)
+        self.redirect(message="Gemini key saved. Ask on /app/ can use it now.")
+
+    def handle_gmail_connect(self, username: str) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+        addr = (params.get("gmail_address", [""])[0] or "").strip()
+        app_pw = (params.get("gmail_app_password", [""])[0] or "").strip()
+        stmt_pw = (params.get("statement_password", [""])[0] or "").strip()
+        if stmt_pw:
+            set_statement_password(username, stmt_pw)
+        if not addr or not app_pw:
+            self.redirect(error="Enter Gmail address and an App Password.")
+            return
+        if not get_statement_password(username):
+            self.redirect(
+                error="Also enter the PDF statement password (SBI: last 5 digits of mobile + DOB ddmmyy)."
+            )
+            return
+        set_gmail_imap(username, addr, app_pw)
+        # Kick an import now
+        try:
+            from .mail_import import run_auto_import
+
+            reports = run_auto_import(username)
+            inserted = sum(int(r.get("inserted") or 0) for r in reports if r.get("ok"))
+            if inserted:
+                self.redirect(
+                    message=f"Gmail connected. Imported {inserted} new transactions from mail."
+                )
+            else:
+                self.redirect(
+                    message="Gmail connected. Auto-import is on — new statement emails will import on this PC."
+                )
+        except Exception as exc:
+            self.redirect(message=f"Gmail saved. First check failed: {exc}")
+
+    def handle_mail_now(self, username: str) -> None:
+        try:
+            from .mail_import import run_auto_import
+
+            reports = run_auto_import(username)
+            inserted = sum(int(r.get("inserted") or 0) for r in reports if r.get("ok"))
+            if inserted:
+                self.redirect(
+                    message=f"Imported {inserted} new transactions from mail.",
+                    tab="review",
+                    tx_filter="last_statement",
+                )
+            else:
+                self.redirect(message="No new WhatsApp statements in mail.")
+        except Exception as exc:
             self.redirect(error=str(exc))
 
     def handle_manual(self, username: str) -> None:
@@ -750,7 +1160,12 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 )
                 if shared_with and self._is_registered_username(shared_with):
                     self.sync_shared_transaction(conn, transaction_id, username, shared_with)
-            self.redirect(message="Transaction confirmed and merchant knowledge base updated.")
+            tx_filter = params.get("tx_filter", ["needs_review"])[0]
+            self.redirect(
+                message="Transaction confirmed.",
+                tab="review",
+                tx_filter=tx_filter,
+            )
         except ValueError as exc:
             self.redirect(error=str(exc))
         except Exception as exc:
@@ -795,7 +1210,15 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 confirmed += 1
 
         if confirmed:
-            self.redirect(message=f"Confirmed {confirmed} review change(s). Dashboard updated.")
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
+            tx_filter = params.get("tx_filter", ["needs_review"])[0]
+            self.redirect(
+                message=f"Confirmed {confirmed} review change(s).",
+                tab="review",
+                tx_filter=tx_filter,
+            )
         elif skipped:
             self.redirect(error="No changes saved. Choose a category for at least one review row.")
         else:
@@ -836,7 +1259,15 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     updated += 1
 
             if updated:
-                self.redirect(message=f"Saved {updated} classification edit(s). Dashboard updated.")
+                from .cloud_sync import trigger_cloud_sync_bg
+
+                trigger_cloud_sync_bg(username)
+                tx_filter = params.get("tx_filter", ["classified"])[0]
+                self.redirect(
+                    message=f"Saved {updated} classification edit(s).",
+                    tab="review",
+                    tx_filter=tx_filter,
+                )
             elif skipped:
                 self.redirect(error="No edits saved. Choose a category for at least one classified row.")
             else:
@@ -988,6 +1419,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             db_path = self._db_path_for(username)
             with connect(db_path) as conn:
                 add_transaction_link(conn, debit_id, credit_id, amount)
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(message="Transactions connected successfully.")
         except ValueError as exc:
             self.redirect(error=str(exc))
@@ -1003,6 +1437,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             db_path = self._db_path_for(username)
             with connect(db_path) as conn:
                 remove_transaction_link(conn, link_id)
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(message="Connection removed successfully.")
         except Exception as exc:
             logger.exception("Unexpected error disconnecting transactions.")
@@ -1016,6 +1453,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             db_path = self._db_path_for(username)
             with connect(db_path) as conn:
                 delete_merchant_rule(conn, rule_id)
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(message="Merchant rule deleted successfully.")
         except Exception as exc:
             logger.exception("Unexpected error deleting rule.")
@@ -1131,6 +1571,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             with connect(db_path) as conn:
                 from .contacts import create_contact
                 create_contact(conn, name, aliases, notes)
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(message=f"Contact '{name}' created.", tab="contacts")
         except Exception as exc:
             self.redirect(error=str(exc), tab="contacts")
@@ -1156,6 +1599,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 from .contacts import update_contact
 
                 update_contact(conn, contact_id, name, aliases, notes)
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(message=f"Updated name to “{name}”.", tab="contacts")
         except Exception as exc:
             self.redirect(error=str(exc), tab="contacts")
@@ -1191,6 +1637,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     is_opening_balance=is_opening_balance,
                     created_by="user",
                 )
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             msg = (
                 "Loan posted to khata (bank row unchanged)."
                 if purpose == "loan" and transaction_id
@@ -1253,6 +1702,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     entry_date=entry_date,
                     created_by="user",
                 )
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(message="Pass-through transaction confirmed.", tab="contacts")
         else:
             self.redirect(message="Pass-through suggestion dismissed.", tab="contacts")
@@ -1275,6 +1727,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     amount=amount,
                     created_by="user",
                 )
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             if bal["net"] == 0:
                 self.redirect(message="Balance marked as settled.", tab="contacts")
             else:
@@ -1319,6 +1774,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     notes=notes or None,
                     created_by="user",
                 )
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(
                 message=(
                     f"Rolling ₹{result['amount']:,.2f}: "
@@ -1357,6 +1815,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     notes=notes or None,
                     created_by="user",
                 )
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             name = result["contact_name"]
             amt = result["amount"]
             if they_owe:
@@ -1381,6 +1842,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 from .contacts import void_ledger_entry
 
                 void_ledger_entry(conn, entry_id, reason="voided by user")
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
             self.redirect(message="Ledger entry voided.", tab="contacts")
         except Exception as exc:
             self.redirect(error=str(exc), tab="contacts")
@@ -1433,6 +1897,9 @@ def run(host: str | None = None, port: int | None = None) -> None:
     logger.info("Expense tracker running at http://%s:%d (Dual IPv4/IPv6)", host, port)
     logger.info("Database: %s", data_dir)
     print(f"Expense tracker running at http://{host}:{port}", flush=True)
+    from .mail_poller import start_mail_poller
+
+    start_mail_poller()
     print(f"DATA_DIR={data_dir}", flush=True)
     try:
         server.serve_forever()

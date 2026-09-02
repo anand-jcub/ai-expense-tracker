@@ -135,6 +135,7 @@ def main() -> int:
 
     while True:
         proc = None
+        mcp_proc = None
         try:
             with OUT_LOG.open("ab") as out, ERR_LOG.open("ab") as err:
                 stamp = f"\n----- server start {datetime.now():%Y-%m-%d %H:%M:%S} -----\n".encode()
@@ -155,13 +156,31 @@ def main() -> int:
                 proc = subprocess.Popen(**kwargs)
                 write_pid(PID_FILE, proc.pid)
                 log(f"Server started pid={proc.pid}")
+                
+                # Launch MCP Server
+                mcp_kwargs = kwargs.copy()
+                mcp_kwargs["args"] = [str(PYTHON), str(ROOT / "expense_tracker" / "mcp_server.py")]
+                mcp_proc = subprocess.Popen(**mcp_kwargs)
+                log(f"MCP Server started pid={mcp_proc.pid}")
+                
                 code = proc.wait()
                 log(f"Server exited code={code}; restart in {RESTART_DELAY}s")
+                
+                if mcp_proc and mcp_proc.poll() is None:
+                    try:
+                        mcp_proc.terminate()
+                    except Exception:
+                        pass
         except KeyboardInterrupt:
             log("Watchdog stopped by user")
             if proc is not None and proc.poll() is None:
                 try:
                     proc.terminate()
+                except Exception:
+                    pass
+            if mcp_proc is not None and mcp_proc.poll() is None:
+                try:
+                    mcp_proc.terminate()
                 except Exception:
                     pass
             return 0

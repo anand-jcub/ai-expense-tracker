@@ -151,6 +151,49 @@ _BANK_CODES = {
     "kkbk", "ubin", "sbip", "idfb", "axis", "kotak", "dcbl", "pmcb",
     "barb", "punb", "mahb", "bkid", "cbin", "alla", "orbc", "vijb",
     "stbp", "srcb", "pytm", "ratn", "finf", "airp", "ioba", "idib",
+    "jiop", "ppiw",
+}
+
+# Maps truncated UPI payee names (as they appear in bank descriptions, uppercase)
+# to their proper human-readable brand names.
+_UPI_BRAND_MAP: dict[str, str] = {
+    # Groceries
+    "INNOVATI": "Innovative",
+    "BBNOW":    "BB Now",
+    "BIGBASKET": "BigBasket",
+    "JIOMART":  "JioMart",
+    "JIOMARTG": "JioMart",
+    "BLINKIT":  "Blinkit",
+    "ZEPTO":    "Zepto",
+    "DMART":    "D-Mart",
+    # Food
+    "ZOMATO":   "Zomato",
+    "ZOMATO L": "Zomato",
+    "ZOMATO LTD": "Zomato",
+    "SWIGGY":   "Swiggy",
+    "SWIGGYIN": "Swiggy",
+    # Transport
+    "UBER":     "Uber",
+    "RAPIDO":   "Rapido",
+    "OLACABS":  "Ola",
+    # Shopping
+    "AMAZON P": "Amazon Pay",
+    "AMAZON":   "Amazon",
+    "FLIPKART": "Flipkart",
+    "MYNTRA":   "Myntra",
+    # Finance / Wallets
+    "ONE97 CO": "Paytm",
+    "ONE97":    "Paytm",
+    "PHONEPE":  "PhonePe",
+    # Healthcare
+    "GG MEDS":  "GG Meds",
+    "APOLLO":   "Apollo Pharmacy",
+    "MEDPLUS":  "MedPlus",
+    # Telecom
+    "JIO":      "Jio",
+    "AIRTEL":   "Airtel",
+    "BSNL":     "BSNL",
+    "VI ":      "Vi",
 }
 
 
@@ -240,11 +283,15 @@ def _extract_upi_payee(raw: str) -> str | None:
     payee_raw = parts[3].strip()
     # Clean the payee: remove leading digits/special chars
     payee_clean = re.sub(r"^[\d\s]+", "", payee_raw).strip()
-    # Remove trailing single-letter initials (e.g. "BIPIN B" -> "Bipin")
-    payee_clean = re.sub(r"\s+[A-Za-z]$", "", payee_clean).strip()
-    # Title-case
     if not payee_clean:
         return None
+
+    # Check brand map first (match against uppercase key)
+    brand = _UPI_BRAND_MAP.get(payee_clean.upper())
+    if brand:
+        return brand
+
+    # Title-case the raw payee name — keep ALL parts including single-letter initials
     return " ".join(w.capitalize() for w in payee_clean.split())
 
 

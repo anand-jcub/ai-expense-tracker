@@ -4,7 +4,7 @@
 
   var FILTER_KEYS = [
     'start_date', 'end_date', 'exclude_business', 'use_my_share',
-    'review_sort', 'review_search', 'edit_search', 'person_search', 'exclude_credits'
+    'review_sort', 'review_search', 'edit_search', 'person_search', 'exclude_credits', 'tx_filter'
   ];
 
   /* ── Diagnostic Global Error Logger ── */
@@ -79,7 +79,7 @@
   // Init tab selection on load
   var initialTab = location.hash ? location.hash.slice(1) : (sessionStorage.getItem('_active_tab') || 'dashboard');
   if (initialTab === 'person-search') initialTab = 'search';
-  if (initialTab === 'edit-classifications') initialTab = 'transactions';
+  if (initialTab === 'transactions' || initialTab === 'edit-classifications') initialTab = 'review';
   if (initialTab === 'merchant-rules' || initialTab === 'shared-expenses') initialTab = 'rules';
   switchTab(initialTab);
 
@@ -87,7 +87,7 @@
   window.addEventListener('hashchange', function () {
     var hash = location.hash.slice(1);
     if (hash === 'person-search') hash = 'search';
-    if (hash === 'edit-classifications') hash = 'transactions';
+    if (hash === 'transactions' || hash === 'edit-classifications') hash = 'review';
     if (hash === 'merchant-rules' || hash === 'shared-expenses') hash = 'rules';
     if (hash) switchTab(hash);
   });
@@ -202,24 +202,48 @@
       }
     };
 
-    // 1. Credit / Debit Donut Chart
-    var donutCanvas = document.getElementById('creditDebitChart');
-    if (donutCanvas) {
-      var existing = Chart.getChart(donutCanvas);
+    // 1. Monthly Spend Trend Line Chart
+    var trendCanvas = document.getElementById('monthlyTrendChart');
+    if (trendCanvas) {
+      var existing = Chart.getChart(trendCanvas);
       if (existing) existing.destroy();
-      
-      var creditVal = parseFloat(donutCanvas.getAttribute('data-credit') || '0');
-      var debitVal = parseFloat(donutCanvas.getAttribute('data-debit') || '0');
-      
-      new Chart(donutCanvas, {
-        type: 'doughnut',
+
+      var activeTab = 'expenses';
+      if (document.getElementById('card-credits') && document.getElementById('card-credits').classList.contains('active')) {
+        activeTab = 'credits';
+      } else if (document.getElementById('card-debits') && document.getElementById('card-debits').classList.contains('active')) {
+        activeTab = 'debits';
+      }
+
+      var trendLabels = JSON.parse(trendCanvas.getAttribute('data-labels-' + activeTab) || '[]');
+      var trendValues = JSON.parse(trendCanvas.getAttribute('data-values-' + activeTab) || '[]');
+
+      var lineColor = accentColor;
+      var areaBg = isDark ? 'rgba(99, 102, 241, 0.18)' : 'rgba(79, 70, 229, 0.12)';
+      if (activeTab === 'credits') {
+        lineColor = successColor;
+        areaBg = isDark ? 'rgba(16, 185, 129, 0.18)' : 'rgba(5, 150, 105, 0.12)';
+      } else if (activeTab === 'debits') {
+        lineColor = errorColor;
+        areaBg = isDark ? 'rgba(239, 68, 68, 0.18)' : 'rgba(220, 38, 38, 0.12)';
+      }
+
+      new Chart(trendCanvas, {
+        type: 'line',
         data: {
-          labels: ['Credits', 'Debits'],
+          labels: trendLabels,
           datasets: [{
-            data: [creditVal, debitVal],
-            backgroundColor: [successColor, errorColor],
-            borderWidth: 0,
-            hoverOffset: 4
+            data: trendValues,
+            borderColor: lineColor,
+            backgroundColor: areaBg,
+            borderWidth: 3,
+            fill: true,
+            tension: 0.35,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: lineColor,
+            pointBorderColor: isDark ? '#0f172a' : '#ffffff',
+            pointBorderWidth: 2
           }]
         },
         options: {
@@ -231,12 +255,28 @@
               callbacks: {
                 label: function(context) {
                   var rawVal = context.raw || 0;
-                  return ' ' + context.label + ': ₹' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
+                  return ' ₹' + rawVal.toLocaleString('en-IN', { minimumFractionDigits: 2 });
                 }
               }
             }
           },
-          cutout: '72%'
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { color: textMuted, font: { family: 'Inter', weight: 500 } }
+            },
+            y: {
+              grid: { color: gridColor },
+              ticks: {
+                color: textMuted,
+                font: { family: 'Inter' },
+                callback: function(val) {
+                  if (val >= 1000) return '₹' + (val / 1000).toFixed(0) + 'k';
+                  return '₹' + val;
+                }
+              }
+            }
+          }
         }
       });
     }
@@ -504,8 +544,18 @@
     });
 
     // Update chart section headings based on selected card
+    var trendTitle = document.getElementById('chart-trend-title');
     var categoryTitle = document.getElementById('chart-category-title');
     var merchantTitle = document.getElementById('chart-merchant-title');
+    if (trendTitle) {
+      if (type === 'credits') {
+        trendTitle.innerText = 'Monthly credits trend';
+      } else if (type === 'debits') {
+        trendTitle.innerText = 'Monthly debits trend';
+      } else {
+        trendTitle.innerText = 'Monthly expense trend';
+      }
+    }
     if (categoryTitle && merchantTitle) {
       if (type === 'credits') {
         categoryTitle.innerText = 'Credits by category';

@@ -307,6 +307,51 @@ form.import {
   align-items: end;
 }
 
+.import-statement {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.import-status {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.import-status span,
+.import-last,
+.muted-line {
+  color: var(--muted);
+  font-size: 13px;
+}
+.import-last { margin: 0; }
+.import-now { margin: 0; }
+.import-more summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 14px;
+}
+.import-more[open] summary { margin-bottom: 10px; }
+form.import-gmail,
+form.import-upload {
+  grid-template-columns: 1fr;
+  max-width: 360px;
+}
+.import-recent {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.log-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.log-row:last-child { border-bottom: none; }
+.log-row .muted-line { display: block; font-size: 12px; }
+
 form.manual {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -899,6 +944,19 @@ a.home-chip:hover {
 .nav-more-items .tab-link {
   padding: 10px 12px;
   font-size: 13px;
+}
+
+.gemini-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.gemini-key-form input {
+  width: 100%;
+  padding: 6px 8px;
 }
 
 /* ── Pass-through cards with pickers ── */

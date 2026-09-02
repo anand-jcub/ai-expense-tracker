@@ -18,12 +18,13 @@ Living map for the **architecture agent**. Update this when modules are intentio
         ┌─────────┴──────────┐
         ▼                    ▼
 ┌───────────────┐    ┌───────────────────┐
-│ Domain        │    │ Auth              │
-│ contacts.py   │    │ auth.py           │
-│ services.py   │    └───────────────────┘
-│ classifier.py │
-│ connections.py│
-│ sbi_pdf.py    │
+│ Domain        │    │ Auth              │    │ Assistant (I)      │
+│ contacts.py   │    │ auth.py           │    │ assistant/*        │
+│ services.py   │    └───────────────────┘    │ Gemini + tools     │
+│ classifier.py │                             └─────────┬──────────┘
+│ connections.py│                                       │
+│ sbi_pdf.py    │                                       ▼
+│               │                             (calls contacts / services / db)
 └───────┬───────┘
         ▼
 ┌───────────────┐
@@ -44,6 +45,8 @@ Living map for the **architecture agent**. Update this when modules are intentio
 | **F. React shell** | `frontend/` | /app SPA | classic form posts |
 | **G. Ops** | `start.ps1`, `run_forever.py`, `app.py` | process lifecycle | domain rules |
 | **H. Tests** | `tests/` | regression | production data |
+| **I. Assistant** | `expense_tracker/assistant/` | Gemini tool loop, confirm tokens, local intent | dashboard UI, People UI, spend formulas |
+| **J. Cloud snapshot** | `cloud-mcp/`, `cloud_sync.py` | Optional KV glance + Worker REST for PC-off phone | writes, Gemini, SQLite SoT |
 
 ## Hard rules
 
@@ -66,6 +69,7 @@ Living map for the **architecture agent**. Update this when modules are intentio
 | classifier → contacts | Prefer no | shared_with resolve only |
 | static app.js → domain math | No | display only |
 | React → Python domain | Via HTTP APIs only | |
+| assistant → contacts / services / db | Yes | Tools only; no UI |
 | tests → any | Yes | |
 
 ## Blast-radius red flags

@@ -33,6 +33,9 @@ ZONE_RULES: list[tuple[str, str, str]] = [
     (r"^frontend/", "F", "React shell"),
     (r"^(app\.py|run_forever\.py|start\.ps1|stop\.ps1|restart\.ps1)$", "G", "Ops"),
     (r"^tests/", "H", "Tests"),
+    (r"^expense_tracker/assistant/", "I", "Assistant"),
+    (r"^cloud-mcp/", "J", "Cloud snapshot"),
+    (r"^expense_tracker/cloud_sync.py$", "J", "Cloud snapshot"),
     (r"^expense_tracker/db\.py$", "P", "Persistence (shared)"),
     (r"^expense_tracker/web\.py$", "P", "HTTP edge (shared)"),
     (r"^expense_tracker/templates\.py$", "P", "Classic UI (shared)"),
@@ -86,9 +89,9 @@ FEATURE_PROBES: dict[str, dict] = {
                 ],
             },
             {
-                "name": "credit/debit pie uses period_totals",
+                "name": "monthly trend chart uses period_trends / monthly_trends_dict",
                 "all_of": [
-                    r"render_credit_debit_pie\(\s*period_totals",
+                    r"render_monthly_trend_chart\(\s*period_trends|render_credit_debit_pie\(\s*period_totals",
                 ],
             },
         ],
@@ -166,6 +169,53 @@ FEATURE_PROBES: dict[str, dict] = {
                 "all_of": [
                     r"add_rolling_entry|is_passthrough\s*=\s*True",
                 ],
+            },
+        ],
+    },
+    "FC-07": {
+        "title": "Shared dashboard summary payload",
+        "files": [
+            ROOT / "expense_tracker" / "services.py",
+            ROOT / "expense_tracker" / "web.py",
+            ROOT / "expense_tracker" / "mcp_server.py",
+            ROOT / "expense_tracker" / "assistant" / "tools.py",
+            ROOT / "frontend" / "src" / "api" / "client.js",
+        ],
+        "surfaces": [
+            {
+                "name": "dashboard_summary_payload owner exists",
+                "all_of": [r"def dashboard_summary_payload"],
+            },
+            {
+                "name": "HTTP GET /api/dashboard/summary",
+                "all_of": [r"/api/dashboard/summary", r"dashboard_summary_payload"],
+            },
+            {
+                "name": "MCP get_dashboard_summary uses payload",
+                "all_of": [r"dashboard_summary_payload"],
+            },
+            {
+                "name": "mobile client fetches the same API",
+                "all_of": [r"/api/dashboard/summary"],
+            },
+        ],
+    },
+    "FC-08": {
+        "title": "Assistant writes require confirmation",
+        "files": [
+            ROOT / "expense_tracker" / "assistant" / "tools.py",
+            ROOT / "expense_tracker" / "assistant" / "pending.py",
+            ROOT / "expense_tracker" / "assistant" / "loop.py",
+            ROOT / "expense_tracker" / "web.py",
+        ],
+        "surfaces": [
+            {
+                "name": "propose_add_manual issues confirm_token without insert",
+                "all_of": [r"propose_add_manual", r"needs_confirm", r"confirm_token"],
+            },
+            {
+                "name": "confirm route executes pending once",
+                "all_of": [r"/api/assistant/confirm", r"confirm_action"],
             },
         ],
     },
@@ -248,6 +298,8 @@ def auto_detect_features(diff: str, files: list[str]) -> list[str]:
         ("FC-04", r"passthrough|add_rolling|is_passthrough|rolling"),
         ("FC-05", r"shared_with"),
         ("FC-06", r"frontend/|react"),
+        ("FC-07", r"dashboard_summary_payload|/api/dashboard/summary"),
+        ("FC-08", r"confirm_token|propose_add_manual|assistant/confirm"),
     ]
     for fid, pat in rules:
         if re.search(pat, joined, re.I):

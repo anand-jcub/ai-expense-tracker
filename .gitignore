@@ -8,11 +8,19 @@ venv/
 ENV/
 env/
 .env
+cloud-mcp/.deploy-config.json
+cloud-mcp/.mcp-key.tmp
+cloud-mcp/node_modules/
 
 # Application databases & data backups
-data/*.db
-data/*.db.backup*
-data/expenses.db
+*.db
+*.db*
+*.sqlite
+*.sqlite3
+data/
+anand
+=
+work/
 
 # Exports & Output directories
 outputs/
@@ -28,9 +36,11 @@ Thumbs.db
 chunks_*.txt
 Users/
 
-
-# Server process state
+# Server process state & runtime files
 server.pid
 watchdog.pid
 watchdog.lock
+tunnel.pid
+tunnel.url
+tunnel.lock
 

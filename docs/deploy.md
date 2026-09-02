@@ -1,42 +1,97 @@
-# Deploy (Phase 0) — free, usage-friendly hosting
+# Deploy / remote access
 
-Host the full app (classic UI + React `/app` + APIs) in one container with **SQLite on a volume**.
+## Recommended: Cloudflare Tunnel (free, no deposit)
 
-Later phases (Neon Postgres, MCP, mobile) build on this API surface — see the hosting plan.
+Run the app on this PC and expose it with a free HTTPS URL. **No Google billing, no card, no Docker.**
+
+```cmd
+cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
+tunnel.cmd
+```
+
+| | |
+|--|--|
+| Cost | Free |
+| Needs | PC **on** and local app on port `8765` |
+| URL | `https://….trycloudflare.com` (new URL each restart) |
+| Stop | `stop-tunnel.cmd` |
+| Saved | Current URL in `tunnel.url` |
+
+`tunnel.cmd` starts the local app if needed, installs `cloudflared` if missing, and prints Login / Health links.
+
+**Security:** Anyone with the URL can hit the login page. Use a strong password. Restarting the tunnel changes the URL.
+
+---
+
+## Optional later: Google Cloud Run
+
+Host the full app in a container (PC can be off). Needs a GCP project + **billing linked** (often a deposit/card in India). Heavy for personal use — prefer the tunnel above unless you need always-on without this PC.
+
+**No local Docker required** — Cloud Build builds from the `Dockerfile` via `gcloud run deploy --source`.
+
+Scale-to-zero keeps cost near **$0** within [Cloud Run free tier](https://cloud.google.com/run/pricing) after billing is linked.
+
+## Cloud Run one command (interactive Windows Terminal)
+
+```cmd
+cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
+deploy-gcp.cmd
+```
+
+or:
+
+```powershell
+cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy-gcp.ps1
+```
+
+This will:
+
+1. Install **Google Cloud SDK** via winget if missing  
+2. `gcloud auth login` (browser)  
+3. Use/set a GCP **project**  
+4. Enable Cloud Run, Cloud Build, Artifact Registry, Storage  
+5. Create a **GCS bucket** `{project}-expense-data` and mount it at `/data`  
+6. Deploy with `max-instances=1` (safe for SQLite) and `min-instances=0` (scale to zero)  
+7. Print HTTPS URL + open the service  
+
+First build often takes **5–10 minutes**.
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `8765` local / platform sets this | Listen port |
-| `DATA_DIR` | `./data` | SQLite files (`users.db`, `expenses_*.db`) |
-| `COOKIE_SECURE` | off | Set `1` behind HTTPS |
-| `ENV` | — | `production` also enables Secure cookies |
+| `PORT` | platform sets (`8080`) | Listen port |
+| `DATA_DIR` | `/data` on Cloud Run | SQLite (`users.db`, `expenses_*.db`) |
+| `COOKIE_SECURE` | `1` in production | Secure cookies behind HTTPS |
+| `ENV` | `production` | Enables production cookie behavior |
 
-## Docker local
+## Manual deploy (if you already have gcloud)
 
 ```powershell
-cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
-docker build -t expense-tracker .
-docker run --rm -p 8080:8080 `
-  -e PORT=8080 `
-  -e DATA_DIR=/data `
-  -e COOKIE_SECURE=0 `
-  -e ENV= `
-  -v "${PWD}/data:/data" `
-  expense-tracker
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com storage.googleapis.com
+
+# Durable data (optional but recommended)
+$Bucket = "YOUR_PROJECT_ID-expense-data"
+gcloud storage buckets create "gs://$Bucket" --location asia-south1 --uniform-bucket-level-access
+
+gcloud run deploy expense-tracker `
+  --source . `
+  --region asia-south1 `
+  --allow-unauthenticated `
+  --memory 512Mi `
+  --cpu 1 `
+  --min-instances 0 `
+  --max-instances 1 `
+  --set-env-vars "ENV=production,COOKIE_SECURE=1,DATA_DIR=/data" `
+  --add-volume name=expensedata,type=cloud-storage,bucket=$Bucket `
+  --add-volume-mount volume=expensedata,mount-path=/data
 ```
 
-Open http://127.0.0.1:8080
-
-## Google Cloud Run (free tier, scale-to-zero)
-
-1. Create a project; enable Cloud Run and Artifact Registry.
-2. Build and push the image (Cloud Build or local + push).
-3. Deploy **with a volume** for SQLite (Cloud Storage FUSE volume or migrate to Postgres in Phase 2).
-
-Minimal deploy (ephemeral disk — **demo only, data may reset**):
+### Ephemeral demo only (no bucket)
 
 ```bash
 gcloud run deploy expense-tracker \
@@ -44,92 +99,67 @@ gcloud run deploy expense-tracker \
   --region asia-south1 \
   --allow-unauthenticated \
   --set-env-vars "ENV=production,COOKIE_SECURE=1,DATA_DIR=/tmp/data" \
-  --memory 512Mi \
-  --cpu 1 \
-  --min-instances 0 \
-  --max-instances 2
+  --memory 512Mi --cpu 1 --min-instances 0 --max-instances 1
 ```
 
-**Important:** For durable data on free tier, either:
+**Warning:** `/tmp` is wiped when the instance scales to zero or is replaced.
 
-- Attach a **persistent volume** / mount GCS bucket to `DATA_DIR`, or  
-- Plan **Phase 2 Neon Postgres** before real multi-device use.
+## Data notes (SQLite on Cloud Run)
 
-## Fly.io (recommended for this machine)
-
-`flyctl` is installable via winget. **No local Docker** — Fly uses a remote builder.
-
-### One command (interactive Windows Terminal)
+- Cloud Run **local disk is ephemeral**. The deploy script mounts a **GCS bucket** at `/data`.
+- Keep **`max-instances=1`** so only one process writes SQLite (GCS FUSE has weak locking).
+- Cloud DB starts **empty**. To seed from this PC after first deploy:
 
 ```powershell
-cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
-.\deploy.ps1
+gcloud storage cp data\users.db gs://YOUR_PROJECT_ID-expense-data/users.db
+gcloud storage cp "data\expenses_anand.db" gs://YOUR_PROJECT_ID-expense-data/expenses_anand.db
+# then restart the revision if needed:
+gcloud run services update expense-tracker --region asia-south1
 ```
 
-This will:
-
-1. Install/login to Fly (browser)  
-2. Create app + 1GB volume `expensedata`  
-3. `fly deploy --remote-only`  
-4. Open `https://<app>.fly.dev`
-
-### Manual steps
-
-```powershell
-winget install --id Fly-io.flyctl -e
-# restart terminal, then:
-flyctl auth login
-flyctl apps create expense-tracker-anand --org personal
-flyctl volumes create expensedata --region sin --size 1 -a expense-tracker-anand -y
-flyctl deploy --remote-only
-```
-
-### GitHub Actions (optional)
-
-1. Locally: `flyctl tokens create deploy -x 999999h`  
-2. GitHub → repo **Settings → Secrets → Actions** → `FLY_API_TOKEN`  
-3. Push to `master` or run workflow **Fly Deploy**
-
-`fly.toml` is already in the repo with `/data` mount + health check on `/api/health`.
+- For multi-device / concurrent writers, plan **Phase 2 Neon/Postgres** (see roadmap).
 
 ## After deploy
 
-1. Open the HTTPS URL → `/login`  
-2. Register or use existing user (if you copied `data/` into the volume)  
-3. Confirm data still present after redeploy  
+1. Open the printed HTTPS URL → `/login`  
+2. Register a user (or upload SQLite as above)  
+3. Hit `/api/health`  
+4. Create API tokens for MCP/mobile — see [api.md](api.md)
 
-## API tokens (Phase 1)
+## Docker local (optional)
 
-Non-browser clients (MCP, mobile, scripts) use Bearer tokens — see **[docs/api.md](api.md)**.
+Only if Docker Desktop is installed:
 
-```http
-POST /api/token
-Content-Type: application/json
-
-{"username":"…","password":"…","label":"mcp"}
+```powershell
+docker build -t expense-tracker .
+docker run --rm -p 8080:8080 `
+  -e PORT=8080 -e DATA_DIR=/data -e COOKIE_SECURE=0 -e ENV= `
+  -v "${PWD}/data:/data" `
+  expense-tracker
 ```
 
-Then: `Authorization: Bearer exp_…` on `/api/*`.
+## Fly.io (optional / not primary)
 
-## Roadmap after Phase 0
+Fly requires a payment method for new accounts and is no longer the default path.
+Scripts remain: `deploy.cmd` / `deploy.ps1` + `fly.toml`. Prefer **Google Cloud** above.
+
+## Roadmap
 
 | Phase | What |
 |-------|------|
-| 0 | Container + volume (this doc) |
-| 1 | API tokens ✅ + static React on Cloudflare Pages |
-| 2 | Neon/Turso instead of SQLite volume |
+| 0 | Container on Cloud Run + GCS data (this doc) |
+| 1 | API tokens ✅ + optional static React on Cloudflare Pages |
+| 2 | Neon/Turso instead of SQLite on FUSE |
 | 3 | MCP stdio tools ✅ — see [mcp.md](mcp.md) |
 | 4 | PWA mobile |
 | 5 | AI agent via same tools/APIs |
 
 Architecture rule: **domain stays in Python**; MCP/mobile never reimplement `get_balance`.
 
-## Deploy tools not on this machine yet
+## Tools on this machine
 
-Docker / flyctl / gcloud are optional on the dev PC. Install one of:
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [flyctl](https://fly.io/docs/hands-on/install-flyctl/)
-- [Google Cloud SDK](https://cloud.google.com/sdk/docs/install)
-
-Then use `Dockerfile` + `fly.toml` as above.
+| Tool | Needed for GCP? |
+|------|-----------------|
+| `gcloud` (Google Cloud SDK) | **Yes** — installed by `deploy-gcp.cmd` |
+| Docker Desktop | No (Cloud Build builds the image) |
+| flyctl | No |

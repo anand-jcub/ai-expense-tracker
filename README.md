@@ -15,29 +15,45 @@ cd C:\Users\User\Documents\Codex\2026-07-02\i-want-to-build-an-ai
 Then open:
 
 ```text
-http://127.0.0.1:8765
+http://127.0.0.1:8765        classic
+http://127.0.0.1:8765/app/   phone / Ask
 ```
+
+Ask uses Gemini on the PC. Set `GEMINI_API_KEY` (never in the phone). Without it, Ask still answers “how much does X owe me?” and “what did I spend on food this month.”
 
 | Script | Purpose |
 |--------|---------|
 | `.\start.ps1` | Start (or no-op if already up) |
 | `.\stop.ps1` | Stop server + watchdog |
 | `.\restart.ps1` | Bounce cleanly |
+| `tunnel.cmd` | Free public HTTPS (Cloudflare Tunnel; PC must be on) |
+| `install-startup.cmd` | Start app at sign-in; restart tunnel every 2 min if it died (works while locked) |
+| `stop-tunnel.cmd` | Stop the public tunnel only |
+| `import-mail.cmd` | Import statement PDFs (saved password unlocks automatically) |
 
 One-shot (no auto-restart): `.\venv\Scripts\python.exe app.py`
 
-## Hosted (Phase 0)
+## Phone / public URL (free, no cloud bill)
 
-Container deploy (Cloud Run / Fly) with SQLite on a volume:
-
-- Guide: **[docs/deploy.md](docs/deploy.md)**
-- Env: `PORT`, `HOST=0.0.0.0`, `DATA_DIR`, `COOKIE_SECURE=1`, `ENV=production`
-
-```powershell
-docker build -t expense-tracker .
+```cmd
+tunnel.cmd
 ```
 
-API tokens (MCP / mobile): **[docs/api.md](docs/api.md)** — `POST /api/token`, then `Authorization: Bearer …`.
+Gives a `https://….trycloudflare.com` link to this PC. No deposit, no Google Cloud.  
+PC must stay on. URL changes each time you restart the tunnel. Details: **[docs/deploy.md](docs/deploy.md)**
+
+**Phone when the PC is off:** run `sync-cloud.cmd`, then open the `…/app/?key=…` line it prints (Cloudflare Worker). Home and Ask use the last snapshot. Add waits until the PC is on.
+
+## Cloud AI / Gemini Spark (like Second Brain)
+
+```cmd
+sync-cloud.cmd
+```
+
+Then paste the MCP URL into Gemini → Connected apps (see **[docs/mcp.md](docs/mcp.md)** / **[cloud-mcp/README.md](cloud-mcp/README.md)**).  
+Worker: `expense-tracker-mcp-hub` on Cloudflare free tier. Re-sync after new imports.
+
+API tokens (HTTP): **[docs/api.md](docs/api.md)** — `POST /api/token`, then `Authorization: Bearer …`.
 
 ## What Phase 1 Supports
 

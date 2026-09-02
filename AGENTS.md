@@ -4,6 +4,7 @@
 
 Before multi-file feature work (add/remove/change behavior), run the **architecture agent**:
 
+- Constitution: `KEY_PRINCIPLES.md`
 - Skill: `.grok/skills/architecture-agent/SKILL.md` (`/architecture-agent`)
 - Map: `docs/architecture-map.md`
 - Coherence contracts: `docs/feature-coherence.md`
@@ -34,6 +35,8 @@ Before multi-file feature work (add/remove/change behavior), run the **architect
 | F | React `/app` |
 | G | Ops / process |
 | H | Tests |
+| I | Assistant (Gemini tools + confirm) |
+| J | Cloud snapshot (Worker REST / glance) |
 | P | Shared edge (`web`, `templates`, `db`) |
 
 ## Feature contracts (short)
@@ -46,6 +49,16 @@ Before multi-file feature work (add/remove/change behavior), run the **architect
 | FC-04 | Rolling / pass-through |
 | FC-05 | Shared partner |
 | FC-06 | React vs classic shells |
+| FC-07 | Mobile / Ask / Graphs share dashboard summary |
+| FC-08 | Assistant writes need confirm |
+| FC-09 | Live vs snapshot share mobile APIs |
+
+## Data Presentation & Classifier Invariants
+
+1. **No Silent Capping**: When rendering lists filtered by date period or category, never apply hardcoded array slices (e.g. `rows[:40]`, `flow_txns[:50]`) inside template loops. If pagination is needed, implement explicit page controls.
+2. **UPI Merchant Naming**: `expense_tracker/classifier.py` is the single source of truth for payee display strings. Preserve initials (e.g. `"Mathew C P"`) and expand brands via `_UPI_BRAND_MAP`. Any parser updates must be backfilled to existing SQLite databases.
+3. **Shared Expense Defaults**: Default split count is 2 people unless specified otherwise.
+4. **User Review Immutability**: Any transaction with `status = 'reviewed'` or user-confirmed split ratio is strictly immutable to automated re-classification, re-imports, or batch classifier scripts. Reclassification operations must only target unreviewed items (`WHERE status != 'reviewed'`).
 
 ## Local run
 

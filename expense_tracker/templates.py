@@ -23,6 +23,7 @@ from .services import (
     filter_editable_rows,
     filter_review_rows,
     filter_transactions_by_text,
+    monthly_trends_dict,
     people_from_split_ratio,
     review_people_value,
     sort_review_rows,
@@ -31,10 +32,13 @@ from .services import (
 )
 
 
-def login_page(message: str | None = None, error: str | None = None) -> bytes:
+def login_page(message: str | None = None, error: str | None = None, next_path: str = "") -> bytes:
     """Render the login page."""
     msg_html = f'<div class="toast success">{esc(message)}</div>' if message else ""
     err_html = f'<div class="toast error">{esc(error)}</div>' if error else ""
+    next_html = (
+        f'<input type="hidden" name="next" value="{esc(next_path)}">' if next_path else ""
+    )
     body = f"""<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Login — Expense Tracker</title>
@@ -47,6 +51,7 @@ def login_page(message: str | None = None, error: str | None = None) -> bytes:
     <p class="auth-subtitle">Sign in to your account</p>
     {msg_html}{err_html}
     <form method="post" action="/login" class="auth-form">
+      {next_html}
       <label>Username<input type="text" name="username" autofocus required autocomplete="username"></label>
       <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
       <button type="submit">Sign in</button>
@@ -112,6 +117,19 @@ def row_get(row, key: str, default=None):
     return row[key] if key in row.keys() else default
 
 
+def bank_amount_html(row) -> str:
+    """Full bank debit/credit — same as Last statement. Share is a note only."""
+    html_amt = signed_amount(row["amount_signed"])
+    et = row_get(row, "expense_type") or ""
+    share = row_get(row, "my_share")
+    if et == "Shared" and share is not None:
+        html_amt += (
+            f'<div style="font-size:11px;color:var(--muted);margin-top:2px;">'
+            f"your share {money(share)}</div>"
+        )
+    return html_amt
+
+
 def option_tags(options: list[str], selected: str | None) -> str:
     return "".join(
         f'<option value="{esc(option)}" {"selected" if option == selected else ""}>{esc(option)}</option>'
@@ -159,6 +177,22 @@ def render_credit_debit_pie(totals: dict[str, Decimal]) -> str:
         <div><span class="legend-dot debit-dot"></span><strong>Debits</strong><span>{money(debit)}</span></div>
         <div><span class="legend-dot net-dot"></span><strong>Net</strong><span>{signed_amount(net)}</span></div>
       </div>
+    </div>
+    """
+
+
+def render_monthly_trend_chart(trends_dict: dict[str, list[tuple[str, Decimal]]]) -> str:
+    import json
+    data_attrs = []
+    for key in ['expenses', 'debits', 'credits']:
+        trend = trends_dict.get(key, [])
+        labels = [t[0] for t in trend]
+        values = [float(t[1]) for t in trend]
+        data_attrs.append(f'data-labels-{key}="{esc(json.dumps(labels))}" data-values-{key}="{esc(json.dumps(values))}"')
+    
+    return f"""
+    <div class="chart-container" style="position: relative; min-height: 200px; width: 100%;">
+      <canvas id="monthlyTrendChart" {' '.join(data_attrs)}></canvas>
     </div>
     """
 
@@ -239,59 +273,158 @@ def render_recent_imports_view(recent_imports: list) -> str:
         time_display = raw_date.split("T")[1][:5] if "T" in raw_date and len(raw_date.split("T")[1]) >= 5 else ""
         date_str = f"{dt_display} {time_display}".strip()
         count = imp["transaction_count"] or 0
-        pwd = "🔒 Password protected" if imp["password_used"] else "📄 Plain import"
-        
         badge_class = "success" if count > 0 else "muted"
-        
         rows_html.append(
             f"""
-            <div class="log-row" style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--border-color); transition:background 0.2s ease;">
-              <div style="display:flex; flex-direction:column; gap:4px;">
-                  <strong style="color:var(--text); font-size:14px;">{fname}</strong>
-                  <span style="color:var(--muted); font-size:12px;">{esc(date_str)}</span>
+            <div class="log-row">
+              <div>
+                  <strong>{fname}</strong>
+                  <span class="muted-line">{esc(date_str)}</span>
               </div>
-              <div style="display:flex; align-items:center; gap:16px;">
-                  <span style="font-size:12px; padding:4px 10px; border-radius:12px; background:rgba(255,255,255,0.04); color:var(--muted); border:1px solid rgba(255,255,255,0.1);">{pwd}</span>
-                  <span class="badge {badge_class}" style="font-weight:600; min-width:60px; text-align:center;">{count} txns</span>
-              </div>
+              <span class="badge {badge_class}">{count}</span>
             </div>
             """
         )
         
     return f"""
-    <style>
-      .log-row:hover {{ background: rgba(255, 255, 255, 0.02); }}
-      .log-row:last-child {{ border-bottom: none !important; }}
-    </style>
-    <div style="overflow-x:auto; max-height:300px; overflow-y:auto; background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-        <div style="display:flex; flex-direction:column;">
-          {"".join(rows_html)}
-        </div>
+    <div class="import-recent">
+      {"".join(rows_html)}
     </div>
     """
 
 
+def render_import_statement_section(
+    last_import: dict | None,
+    gmail_on: bool,
+    gmail_address: str | None,
+    pdf_password_saved: bool,
+) -> str:
+    """Quiet import: auto-import status first; PDF upload hidden until needed."""
+    last_line = ""
+    if last_import and last_import.get("filename"):
+        fn = esc(last_import.get("filename") or "")
+        span = ""
+        if last_import.get("start") and last_import.get("end"):
+            span = f" · {esc(str(last_import['start'])[:10])}–{esc(str(last_import['end'])[:10])}"
+        n = last_import.get("inserted")
+        extra = f" · {n} new" if n else ""
+        last_line = (
+            f'<p class="import-last">Last: {fn}{span}{extra} '
+            f'<a href="/?tx_filter=last_statement#review">Review</a></p>'
+        )
+
+    pwd_field = ""
+    if not pdf_password_saved:
+        pwd_field = (
+            '<label>PDF password <input type="password" name="password" '
+            'autocomplete="off" placeholder="SBI: last 5 mobile + DOB ddmmyy"></label>'
+        )
+    upload = f"""
+    <details class="import-more">
+      <summary>Upload a PDF</summary>
+      <form class="import import-upload" method="post" action="/import" enctype="multipart/form-data">
+        <label>Statement PDF <input type="file" name="statement" accept="application/pdf" required></label>
+        {pwd_field}
+        <button type="submit">Import</button>
+      </form>
+    </details>
+    """
+
+    if gmail_on:
+        addr = esc(gmail_address or "Gmail")
+        primary = f"""
+        <div class="import-status">
+          <strong>Auto-import on</strong>
+          <span>{addr}</span>
+        </div>
+        <form method="post" action="/import/mail-now" class="import-now">
+          <button type="submit" class="button subtle">Check mail now</button>
+        </form>
+        {last_line}
+        """
+    else:
+        extra_pw = ""
+        if not pdf_password_saved:
+            extra_pw = (
+                '<label>PDF password <input type="password" name="statement_password" '
+                'autocomplete="off" placeholder="SBI: last 5 mobile + DOB ddmmyy" required></label>'
+            )
+        primary = f"""
+        <form class="import import-gmail" method="post" action="/gmail/connect">
+          <p class="empty">One-time: Google Account → Security → App passwords. Then WhatsApp SBI PDFs import on this PC.</p>
+          <label>Gmail <input type="email" name="gmail_address" value="anandjcub@gmail.com" required></label>
+          <label>App password <input type="password" name="gmail_app_password" autocomplete="off" required></label>
+          {extra_pw}
+          <button type="submit">Turn on auto-import</button>
+        </form>
+        {last_line}
+        """
+
+    return f"""
+    <section class="import-statement">
+      <h2>Import</h2>
+      {primary}
+      {upload}
+    </section>
+    """
+
+
 def render_money_flows_view(transactions: list[dict]) -> str:
-    # Filter for Transfer and Loan categories/expense_types
-    flow_txns = [
-        t for t in transactions
-        if dict(t).get("category") in ("Transfer", "Loan") or dict(t).get("expense_type") in ("Transfer", "Loan")
-    ]
+    # Show all transactions as a complete connected cash flow timeline
+    flow_txns = sorted(
+        transactions,
+        key=lambda r: (str(row_get(r, "txn_date") or ""), row_get(r, "id") or 0),
+        reverse=True,
+    )
     
     if not flow_txns:
         return """
-        <div style="padding:40px; text-align:center; background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; margin-bottom:24px;">
-            <div style="font-size:32px; margin-bottom:12px;">💸</div>
-            <h3 style="margin:0 0 8px 0; color:var(--text);">No Money Flow Data</h3>
-            <p class="empty" style="margin:0;">We couldn't find any recent Transfers or Loans. Upload a statement or classify some transactions as Transfer/Loan to see them here.</p>
+        <div style="padding:32px; text-align:center; background:var(--surface-color); border:1px solid var(--border-color); border-radius:12px; margin-bottom:16px;">
+            <div style="font-size:32px; margin-bottom:8px;">💸</div>
+            <h4 style="margin:0 0 4px 0; color:var(--text);">No Money Flow Data</h4>
+            <p class="empty" style="margin:0; font-size:13px;">No transactions found in this period.</p>
         </div>
         """
         
-    total_inflow = Decimal("0")
-    total_outflow = Decimal("0")
-    
-    items_html = []
-    for f in flow_txns[:50]:
+    total_inflow = sum(
+        (Decimal(str(dict(f).get("credit") or 0)) for f in flow_txns if Decimal(str(dict(f).get("credit") or 0)) > 0),
+        Decimal("0"),
+    )
+    total_outflow = sum(
+        (Decimal(str(dict(f).get("debit") or 0)) for f in flow_txns if Decimal(str(dict(f).get("debit") or 0)) > 0),
+        Decimal("0"),
+    )
+    net_transfer = total_inflow - total_outflow
+    net_color = "var(--success)" if net_transfer >= 0 else "var(--error)"
+
+    summary_bar = f"""
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:14px; margin-bottom:24px;">
+      <div style="background:rgba(16, 185, 129, 0.05); padding:14px 18px; border-radius:12px; border:1px solid rgba(16, 185, 129, 0.2); backdrop-filter:blur(6px);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:700; letter-spacing:0.5px;">Total Inflow</span>
+          <span style="font-size:14px; color:var(--success);">↙</span>
+        </div>
+        <div style="font-size:20px; font-weight:800; color:var(--success); margin-top:6px; font-family:monospace;">+{money(total_inflow)}</div>
+      </div>
+      <div style="background:rgba(239, 68, 68, 0.05); padding:14px 18px; border-radius:12px; border:1px solid rgba(239, 68, 68, 0.2); backdrop-filter:blur(6px);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:700; letter-spacing:0.5px;">Total Outflow</span>
+          <span style="font-size:14px; color:var(--error);">↗</span>
+        </div>
+        <div style="font-size:20px; font-weight:800; color:var(--error); margin-top:6px; font-family:monospace;">-{money(total_outflow)}</div>
+      </div>
+      <div style="background:rgba(255, 255, 255, 0.03); padding:14px 18px; border-radius:12px; border:1px solid var(--border-color); backdrop-filter:blur(6px);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:700; letter-spacing:0.5px;">Net Flow</span>
+          <span style="font-size:14px; color:{net_color};">⇄</span>
+        </div>
+        <div style="font-size:20px; font-weight:800; color:{net_color}; margin-top:6px; font-family:monospace;">{money(net_transfer)}</div>
+      </div>
+    </div>
+    """
+
+    timeline_items = []
+    for idx, f in enumerate(flow_txns):
         date_str = f["txn_date"]
         merchant = f["merchant_display"] or "Unknown"
         amount = Decimal(str(f["amount_signed"] or 0))
@@ -300,71 +433,136 @@ def render_money_flows_view(transactions: list[dict]) -> str:
         desc = f["description"] or ""
         category = dict(f).get("category") or ""
         expense_type = dict(f).get("expense_type") or "Personal"
-        
-        if credit > 0:
-            total_inflow += credit
-        if debit > 0:
-            total_outflow += debit
             
         is_inflow = credit > 0 or amount > 0
-        flow_label = "↙ Credit (Inflow)" if is_inflow else "↗ Debit (Outflow)"
-        flow_color = "var(--success)" if is_inflow else "var(--error)"
-        flow_bg = "rgba(16, 185, 129, 0.1)" if is_inflow else "rgba(239, 68, 68, 0.1)"
-        cat_badge_html = f'<span style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); padding:4px 10px; border-radius:6px; font-size:12px; color:var(--text); box-shadow: 0 2px 4px rgba(0,0,0,0.2);">{esc(category)}</span>' if category else ""
-        
+        flow_color = "#10b981" if is_inflow else "#ef4444"
         display_amount = f"+{money(credit)}" if is_inflow else f"-{money(debit)}"
+        side_class = "timeline-left" if is_inflow else "timeline-right"
+        dot_icon = "↙" if is_inflow else "↗"
         
-        items_html.append(
-            f"""
-            <div class="money-flow-card" style="margin-bottom:16px; padding:16px 20px; border-left:4px solid {flow_color}; background:var(--surface-color); border-radius:10px; border-top:1px solid var(--border-color); border-right:1px solid var(--border-color); border-bottom:1px solid var(--border-color); box-shadow: 0 4px 16px rgba(0,0,0,0.15); transition: transform 0.2s ease, box-shadow 0.2s ease; display:flex; justify-content:space-between; align-items:center;">
-              <div style="flex:1;">
-                <div style="font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">{esc(date_str)}</div>
-                <strong style="display:block; font-size:16px; color:var(--text); letter-spacing:0.3px;">{esc(merchant)}</strong>
-                <div style="font-size:13px; color:var(--muted); margin-top:4px; max-width:80%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{esc(desc)}</div>
-                <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
-                  {cat_badge_html}
-                  <span style="font-size:12px; padding:4px 10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); color:var(--muted);">{esc(expense_type)}</span>
-                </div>
+        cat_badge = f'<span style="font-size:10px; padding:2px 8px; border-radius:10px; background:rgba(255,255,255,0.06); color:var(--text); border:1px solid rgba(255,255,255,0.1);">{esc(category)}</span>' if category else ""
+        type_badge = f'<span style="font-size:10px; padding:2px 8px; border-radius:10px; background:rgba(255,255,255,0.03); color:var(--muted); border:1px solid rgba(255,255,255,0.05);">{esc(expense_type)}</span>'
+        desc_html = f'<div style="font-size:11px; color:var(--muted); margin-top:4px; opacity:0.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{esc(desc)}</div>' if desc and desc.lower() != merchant.lower() else ""
+
+        timeline_items.append(f"""
+        <div class="timeline-item {side_class}">
+          <div class="timeline-node" style="background:{flow_color}; box-shadow:0 0 10px {flow_color}80;">
+            <span style="font-size:10px; color:#000; font-weight:bold;">{dot_icon}</span>
+          </div>
+          <div class="timeline-card" style="border-left: 3px solid {flow_color};">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+              <div style="min-width:0; flex:1;">
+                <div style="font-size:11px; font-weight:700; color:var(--muted); font-family:monospace; margin-bottom:3px;">{esc(date_str)}</div>
+                <div style="font-size:14px; font-weight:700; color:var(--text); line-height:1.2;">{esc(merchant)}</div>
+                {desc_html}
               </div>
-              <div style="text-align:right; display:flex; flex-direction:column; align-items:flex-end;">
-                <span style="font-size:11px; padding:4px 10px; border-radius:12px; background:{flow_bg}; color:{flow_color}; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;">{flow_label}</span>
-                <div style="font-weight:800; font-size:22px; margin-top:10px; color:{flow_color};">
-                  {display_amount}
-                </div>
+              <div style="text-align:right; flex-shrink:0;">
+                <div style="font-size:15px; font-weight:800; color:{flow_color}; font-family:monospace;">{display_amount}</div>
               </div>
             </div>
-            """
-        )
-        
-    net_transfer = total_inflow - total_outflow
-    net_color = "var(--success)" if net_transfer >= 0 else "var(--error)"
-    
-    summary_bar = f"""
+            <div style="display:flex; gap:6px; margin-top:8px; align-items:center; flex-wrap:wrap;">
+              {cat_badge}
+              {type_badge}
+            </div>
+          </div>
+        </div>
+        """)
+
+    timeline_css = """
     <style>
-      .money-flow-card:hover {{ transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); }}
-      .summary-stat-box {{ flex:1; min-width:180px; background:var(--surface-color); padding:20px; border-radius:12px; border:1px solid rgba(255,255,255,0.05); position:relative; overflow:hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
-      .summary-stat-box::before {{ content:''; position:absolute; top:0; left:0; width:100%; height:4px; }}
+      .timeline-container {
+        position: relative;
+        padding: 20px 0;
+        margin: 0 auto;
+        width: 100%;
+      }
+      .timeline-container::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 50%;
+        width: 2px;
+        background: linear-gradient(180deg, rgba(16,185,129,0.3) 0%, rgba(255,255,255,0.1) 50%, rgba(239,68,68,0.3) 100%);
+        transform: translateX(-50%);
+        z-index: 1;
+      }
+      .timeline-item {
+        position: relative;
+        margin-bottom: 20px;
+        width: 100%;
+        display: flex;
+        align-items: center;
+      }
+      .timeline-item.timeline-left {
+        justify-content: flex-start;
+      }
+      .timeline-item.timeline-right {
+        justify-content: flex-end;
+      }
+      .timeline-item.timeline-left .timeline-card {
+        margin-right: calc(50% + 24px);
+        width: calc(50% - 24px);
+      }
+      .timeline-item.timeline-right .timeline-card {
+        margin-left: calc(50% + 24px);
+        width: calc(50% - 24px);
+      }
+      .timeline-node {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid var(--bg-color, #0f172a);
+        transition: transform 0.2s ease;
+      }
+      .timeline-card {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        padding: 12px 14px;
+        backdrop-filter: blur(10px);
+        transition: all 0.2s ease;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+        box-sizing: border-box;
+      }
+      .timeline-card:hover {
+        transform: translateY(-2px);
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(255, 255, 255, 0.18);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      }
+      @media (max-width: 768px) {
+        .timeline-container::before {
+          left: 16px;
+        }
+        .timeline-node {
+          left: 16px;
+        }
+        .timeline-item.timeline-left .timeline-card,
+        .timeline-item.timeline-right .timeline-card {
+          margin-left: 36px;
+          margin-right: 0;
+          width: calc(100% - 36px);
+        }
+      }
     </style>
-    <div style="display:flex; gap:20px; margin-bottom:24px; flex-wrap:wrap;">
-      <div class="summary-stat-box" style="background: linear-gradient(145deg, rgba(30,30,30,1) 0%, rgba(40,40,40,1) 100%);">
-        <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:var(--success);"></div>
-        <div style="font-size:13px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Total Inflow (Credits)</div>
-        <div style="font-size:28px; font-weight:800; color:var(--success); margin-top:8px; text-shadow: 0 2px 10px rgba(16, 185, 129, 0.2);">+{money(total_inflow)}</div>
-      </div>
-      <div class="summary-stat-box" style="background: linear-gradient(145deg, rgba(30,30,30,1) 0%, rgba(40,40,40,1) 100%);">
-        <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:var(--error);"></div>
-        <div style="font-size:13px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Total Outflow (Debits)</div>
-        <div style="font-size:28px; font-weight:800; color:var(--error); margin-top:8px; text-shadow: 0 2px 10px rgba(239, 68, 68, 0.2);">-{money(total_outflow)}</div>
-      </div>
-      <div class="summary-stat-box" style="background: linear-gradient(145deg, rgba(30,30,30,1) 0%, rgba(40,40,40,1) 100%);">
-        <div style="position:absolute; top:0; left:0; width:100%; height:3px; background:{net_color};"></div>
-        <div style="font-size:13px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Net Cash Flow</div>
-        <div style="font-size:28px; font-weight:800; color:{net_color}; margin-top:8px; text-shadow: 0 2px 10px {net_color}40;">{money(net_transfer)}</div>
-      </div>
-    </div>
     """
-    
-    return f'{summary_bar}<div class="timeline" style="display:flex; flex-direction:column; gap:8px;">{"".join(items_html)}</div>'
+
+    return f'''
+    {timeline_css}
+    {summary_bar}
+    <div class="timeline-container">
+      {"".join(timeline_items)}
+    </div>
+    '''
 
 
 def _contact_option_tags(contacts: list[dict], selected_id=None) -> str:
@@ -806,16 +1004,40 @@ def collapsible_section(section_id: str, title: str, body: str, meta: str = "", 
     """
 
 
-def review_sort_controls(direction: str, search_query: str = "") -> str:
+def review_sort_controls(
+    direction: str,
+    search_query: str = "",
+    tx_filter: str = "needs_review",
+    exclude_credits: bool = False,
+    start_date: str = "",
+    end_date: str = "",
+    edit_search: str = "",
+) -> str:
     newest_class = "active" if direction != "oldest" else ""
     oldest_class = "active" if direction == "oldest" else ""
-    search_param = f"&review_search={urllib.parse.quote(search_query)}" if search_query else ""
+
+    def _sort_href(sort_dir: str) -> str:
+        p = [f"review_sort={sort_dir}"]
+        if tx_filter and tx_filter != "needs_review":
+            p.append(f"tx_filter={urllib.parse.quote(tx_filter)}")
+        if exclude_credits:
+            p.append("exclude_credits=1")
+        if search_query:
+            p.append(f"review_search={urllib.parse.quote(search_query)}")
+        if edit_search:
+            p.append(f"edit_search={urllib.parse.quote(edit_search)}")
+        if start_date:
+            p.append(f"start_date={urllib.parse.quote(start_date)}")
+        if end_date:
+            p.append(f"end_date={urllib.parse.quote(end_date)}")
+        return f"/?{'&'.join(p)}#review"
+
     return f"""
     <div class="section-tools">
       <span>Sort by date</span>
       <div class="segmented" aria-label="Review date sort">
-        <a class="{newest_class}" href="/?review_sort=newest{search_param}#review">Newest first</a>
-        <a class="{oldest_class}" href="/?review_sort=oldest{search_param}#review">Oldest first</a>
+        <a class="{newest_class}" href="{_sort_href('newest')}">Newest first</a>
+        <a class="{oldest_class}" href="{_sort_href('oldest')}">Oldest first</a>
       </div>
     </div>
     """
@@ -906,20 +1128,53 @@ def render_person_transaction_rows(rows) -> str:
     return "".join(output)
 
 
-def review_search_controls(search_query: str, review_sort: str, total_count: int, filtered_count: int) -> str:
+def review_search_controls(
+    search_query: str,
+    review_sort: str,
+    total_count: int,
+    filtered_count: int,
+    tx_filter: str = "needs_review",
+    exclude_credits: bool = False,
+    start_date: str = "",
+    end_date: str = "",
+) -> str:
     result_text = (
         f"{filtered_count} of {total_count} pending"
         if search_query.strip()
         else f"{total_count} pending"
     )
+    clear_params = []
+    if tx_filter and tx_filter != "needs_review":
+        clear_params.append(f"tx_filter={urllib.parse.quote(tx_filter)}")
+    if review_sort and review_sort != "newest":
+        clear_params.append(f"review_sort={esc(review_sort)}")
+    if exclude_credits:
+        clear_params.append("exclude_credits=1")
+    if start_date:
+        clear_params.append(f"start_date={urllib.parse.quote(start_date)}")
+    if end_date:
+        clear_params.append(f"end_date={urllib.parse.quote(end_date)}")
+    clear_qs = f"?{'&'.join(clear_params)}" if clear_params else "/"
     clear_link = (
-        f'<a class="button subtle" href="/?review_sort={esc(review_sort)}#review">Clear</a>'
+        f'<a class="button subtle" href="{clear_qs}#review">Clear</a>'
         if search_query.strip()
         else ""
     )
+    hidden_inputs = []
+    if tx_filter:
+        hidden_inputs.append(f'<input type="hidden" name="tx_filter" value="{esc(tx_filter)}">')
+    if review_sort:
+        hidden_inputs.append(f'<input type="hidden" name="review_sort" value="{esc(review_sort)}">')
+    if exclude_credits:
+        hidden_inputs.append('<input type="hidden" name="exclude_credits" value="1">')
+    if start_date:
+        hidden_inputs.append(f'<input type="hidden" name="start_date" value="{esc(start_date)}">')
+    if end_date:
+        hidden_inputs.append(f'<input type="hidden" name="end_date" value="{esc(end_date)}">')
+
     return f"""
     <form method="get" action="/" class="review-search">
-      <input type="hidden" name="review_sort" value="{esc(review_sort)}">
+      {''.join(hidden_inputs)}
       <label>Search review cases <input name="review_search" value="{esc(search_query)}" placeholder="Merchant, notes, amount"></label>
       <button type="submit">Search</button>
       {clear_link}
@@ -928,15 +1183,56 @@ def review_search_controls(search_query: str, review_sort: str, total_count: int
     """
 
 
-def edit_search_controls(search_query: str, total_count: int, filtered_count: int, shown_count: int) -> str:
+def edit_search_controls(
+    search_query: str,
+    total_count: int,
+    filtered_count: int,
+    shown_count: int,
+    tx_filter: str = "classified",
+    review_sort: str = "newest",
+    exclude_credits: bool = False,
+    start_date: str = "",
+    end_date: str = "",
+) -> str:
+    label_plural = "shared expenses" if tx_filter == "shared" else ("loans" if tx_filter == "loan" else "classified")
     if search_query.strip():
-        result_text = f"{filtered_count} of {total_count} classified"
+        result_text = f"{filtered_count} of {total_count} {label_plural}"
     else:
-        result_text = f"Showing recent {shown_count} of {total_count} classified"
-    clear_link = '<a class="button subtle" href="/#edit-classifications">Clear</a>' if search_query.strip() else ""
+        result_text = f"Showing {shown_count} {label_plural}"
+    clear_params = []
+    if tx_filter:
+        clear_params.append(f"tx_filter={urllib.parse.quote(tx_filter)}")
+    if review_sort and review_sort != "newest":
+        clear_params.append(f"review_sort={esc(review_sort)}")
+    if exclude_credits:
+        clear_params.append("exclude_credits=1")
+    if start_date:
+        clear_params.append(f"start_date={urllib.parse.quote(start_date)}")
+    if end_date:
+        clear_params.append(f"end_date={urllib.parse.quote(end_date)}")
+    clear_qs = f"?{'&'.join(clear_params)}" if clear_params else "/"
+    clear_link = (
+        f'<a class="button subtle" href="{clear_qs}#review">Clear</a>'
+        if search_query.strip()
+        else ""
+    )
+    hidden_inputs = []
+    if tx_filter:
+        hidden_inputs.append(f'<input type="hidden" name="tx_filter" value="{esc(tx_filter)}">')
+    if review_sort:
+        hidden_inputs.append(f'<input type="hidden" name="review_sort" value="{esc(review_sort)}">')
+    if exclude_credits:
+        hidden_inputs.append('<input type="hidden" name="exclude_credits" value="1">')
+    if start_date:
+        hidden_inputs.append(f'<input type="hidden" name="start_date" value="{esc(start_date)}">')
+    if end_date:
+        hidden_inputs.append(f'<input type="hidden" name="end_date" value="{esc(end_date)}">')
+
+    placeholder = f"Search {label_plural} (merchant, notes, amount)"
     return f"""
     <form method="get" action="/" class="review-search">
-      <label>Search classified transactions <input name="edit_search" value="{esc(search_query)}" placeholder="Merchant, category, notes, amount"></label>
+      {''.join(hidden_inputs)}
+      <label>Search {esc(label_plural)} <input name="edit_search" value="{esc(search_query)}" placeholder="{esc(placeholder)}"></label>
       <button type="submit">Search</button>
       {clear_link}
       <span>{esc(result_text)}</span>
@@ -1005,7 +1301,7 @@ def render_review_rows(rows) -> str:
                 <span>{esc(row['description'])}</span>
                 <span class="badge warn" style="margin-top:4px; display:inline-block;">needs review</span>
               </td>
-              <td>{signed_amount(row['amount_signed'])}</td>
+              <td>{bank_amount_html(row)}</td>
               <td colspan="5">
                 <div class="review-form" data-row="{row_id}">
                   <input type="hidden" name="review_ids" value="{row_id}">
@@ -1049,7 +1345,7 @@ def render_edit_rows(rows) -> str:
                 <strong>{esc(row['merchant_display'])}</strong>
                 <span>{esc(row['description'])}</span>
               </td>
-              <td>{signed_amount(row['amount_signed'])}</td>
+              <td>{bank_amount_html(row)}</td>
               <td><span class="badge {badge}">{esc(row['status'])}</span></td>
               <td colspan="5">
                 <div class="review-form" data-row="edit_{row_id}">
@@ -1078,7 +1374,7 @@ def render_loan_suggestions(suggestions: list[dict]) -> str:
     if not suggestions:
         return ""
     cards = []
-    for s in suggestions[:6]:
+    for s in suggestions:
         cards.append(
             f"""
             <div class="loan-suggest-card">
@@ -1114,23 +1410,54 @@ def render_loan_suggestions(suggestions: list[dict]) -> str:
 
 
 def render_unified_transactions_section(
-    pending_rows: list,
-    classified_rows: list,
+    workspace_rows: list,
     loan_suggestions: list[dict] | None = None,
     tx_filter: str = "needs_review",
     review_sort: str = "newest",
     review_search: str = "",
     edit_search: str = "",
     exclude_credits: bool = False,
+    start_date: str = "",
+    end_date: str = "",
+    last_import: dict | None = None,
+    last_statement_rows: list | None = None,
 ) -> str:
-    """P2: single workspace with filters for review + edit."""
+    """One amount style for every chip. Last statement is the last file only."""
     tx_filter = tx_filter if tx_filter in {
-        "needs_review", "classified", "shared", "loan", "all"
+        "needs_review", "classified", "shared", "loan", "all", "last_statement"
     } else "needs_review"
 
+    query = (review_search or edit_search or "").strip()
+
+    if tx_filter == "last_statement":
+        rows = list(last_statement_rows or [])
+    else:
+        rows = list(workspace_rows or [])
     if exclude_credits:
-        pending_rows = [r for r in pending_rows if float(r["credit"] or 0) <= 0]
-        classified_rows = [r for r in classified_rows if float(r["credit"] or 0) <= 0]
+        rows = [r for r in rows if float(r["credit"] or 0) <= 0]
+
+    unfiltered_pending = [r for r in rows if (r["status"] or "") == "needs_review"]
+    unfiltered_classified = [r for r in rows if (r["status"] or "") != "needs_review"]
+
+    total_pending = len(unfiltered_pending)
+    total_classified = len(unfiltered_classified)
+    total_shared = sum(1 for r in unfiltered_classified if (r["expense_type"] or "") == "Shared")
+    total_loan = sum(1 for r in unfiltered_classified if (r["expense_type"] or "") == "Loan")
+    total_all = total_pending + total_classified
+    total_last_stmt = len([r for r in (last_statement_rows or []) if not exclude_credits or float(r["credit"] or 0) <= 0])
+
+    pending_rows = list(unfiltered_pending)
+    classified_rows = list(unfiltered_classified)
+    if query:
+        pending_rows = filter_review_rows(pending_rows, query)
+        classified_rows = filter_editable_rows(classified_rows, query)
+
+    pending_rows = sort_review_rows(pending_rows, review_sort)
+    classified_rows = sorted(
+        classified_rows,
+        key=lambda r: (r["txn_date"], r["id"]),
+        reverse=(review_sort != "oldest"),
+    )
 
     pending_count = len(pending_rows)
     classified_count = len(classified_rows)
@@ -1142,10 +1469,12 @@ def render_unified_transactions_section(
         href = f"/?tx_filter={fid}"
         if exclude_credits:
             href += "&exclude_credits=1"
-        if review_search:
-            href += f"&review_search={urllib.parse.quote(review_search)}"
-        if edit_search:
-            href += f"&edit_search={urllib.parse.quote(edit_search)}"
+        if query:
+            href += f"&review_search={urllib.parse.quote(query)}"
+        if start_date:
+            href += f"&start_date={urllib.parse.quote(start_date)}"
+        if end_date:
+            href += f"&end_date={urllib.parse.quote(end_date)}"
         href += f"&review_sort={urllib.parse.quote(review_sort)}#review"
         return (
             f'<a class="button filter-pill{active}" href="{href}" '
@@ -1156,14 +1485,16 @@ def render_unified_transactions_section(
     btn_active = " active" if exclude_credits else " subtle"
     btn_label = "🚫 Credits Filtered (Debits Only)" if exclude_credits else "💳 Filter out credits"
     toggle_val = "0" if exclude_credits else "1"
-    
+
     toggle_href = f"/?tx_filter={tx_filter}"
     if toggle_val == "1":
         toggle_href += "&exclude_credits=1"
-    if review_search:
-        toggle_href += f"&review_search={urllib.parse.quote(review_search)}"
-    if edit_search:
-        toggle_href += f"&edit_search={urllib.parse.quote(edit_search)}"
+    if query:
+        toggle_href += f"&review_search={urllib.parse.quote(query)}"
+    if start_date:
+        toggle_href += f"&start_date={urllib.parse.quote(start_date)}"
+    if end_date:
+        toggle_href += f"&end_date={urllib.parse.quote(end_date)}"
     toggle_href += f"&review_sort={urllib.parse.quote(review_sort)}#review"
 
     exclude_credits_btn = (
@@ -1172,14 +1503,21 @@ def render_unified_transactions_section(
         f'{btn_label}</a>'
     )
 
+    pill_pending = pending_count if query else total_pending
+    pill_classified = classified_count if query else total_classified
+    pill_shared = shared_count if query else total_shared
+    pill_loan = loan_count if query else total_loan
+    pill_all = (pending_count + classified_count) if query else total_all
+
     filters = f"""
     <div class="tx-filter-bar" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;">
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-        {pill("needs_review", "Needs review", pending_count)}
-        {pill("classified", "Classified", classified_count)}
-        {pill("shared", "Shared", shared_count)}
-        {pill("loan", "Loans", loan_count)}
-        {pill("all", "All", pending_count + classified_count)}
+        {pill("needs_review", "Needs review", pill_pending)}
+        {pill("classified", "Classified", pill_classified)}
+        {pill("shared", "Shared", pill_shared)}
+        {pill("loan", "Loans", pill_loan)}
+        {pill("all", "All", pill_all)}
+        {pill("last_statement", "Last statement", total_last_stmt) if last_import else ""}
       </div>
       <div>
         {exclude_credits_btn}
@@ -1189,16 +1527,33 @@ def render_unified_transactions_section(
 
     loan_html = render_loan_suggestions(loan_suggestions or [])
 
+    def form_hidden_fields(fid: str) -> str:
+        h = [f'<input type="hidden" name="tx_filter" value="{esc(fid)}">']
+        if review_sort:
+            h.append(f'<input type="hidden" name="review_sort" value="{esc(review_sort)}">')
+        if query:
+            h.append(f'<input type="hidden" name="review_search" value="{esc(query)}">')
+            h.append(f'<input type="hidden" name="edit_search" value="{esc(query)}">')
+        if exclude_credits:
+            h.append('<input type="hidden" name="exclude_credits" value="1">')
+        if start_date:
+            h.append(f'<input type="hidden" name="start_date" value="{esc(start_date)}">')
+        if end_date:
+            h.append(f'<input type="hidden" name="end_date" value="{esc(end_date)}">')
+        return "".join(h)
+
     # Body by filter
     if tx_filter == "needs_review":
+        empty_msg = "Nothing waiting for review." if not query else "No matching transactions awaiting review."
         body = f"""
-        {review_sort_controls(review_sort, review_search)}
-        {review_search_controls(review_search, review_sort, pending_count, pending_count)}
+        {review_sort_controls(review_sort, query, tx_filter="needs_review", exclude_credits=exclude_credits, start_date=start_date, end_date=end_date, edit_search=query)}
+        {review_search_controls(query, review_sort, total_pending, pending_count, tx_filter="needs_review", exclude_credits=exclude_credits, start_date=start_date, end_date=end_date)}
         <form method="post" action="/review" class="review-batch-form" id="unified-review-form">
+          {form_hidden_fields("needs_review")}
           <div style="overflow-x:auto;">
             <table class="tx-table">
               <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Classify</th></tr></thead>
-              <tbody>{render_review_rows(pending_rows) if pending_rows else '<tr><td colspan="8" class="empty">Nothing waiting for review.</td></tr>'}</tbody>
+              <tbody>{render_review_rows(pending_rows) if pending_rows else f'<tr><td colspan="8" class="empty">{empty_msg}</td></tr>'}</tbody>
             </table>
           </div>
           {review_batch_actions(pending_rows)}
@@ -1207,26 +1562,79 @@ def render_unified_transactions_section(
     elif tx_filter in {"classified", "shared", "loan"}:
         if tx_filter == "shared":
             rows = [r for r in classified_rows if (r["expense_type"] or "") == "Shared"]
+            raw_target_count = total_shared
+            empty_msg = "No matching shared expenses." if query else "No shared expenses found."
         elif tx_filter == "loan":
             rows = [r for r in classified_rows if (r["expense_type"] or "") == "Loan"]
+            raw_target_count = total_loan
+            empty_msg = "No matching loans." if query else "No loan transactions found."
         else:
             rows = classified_rows
+            raw_target_count = total_classified
+            empty_msg = "No matching classified rows." if query else "No classified transactions found."
         body = f"""
-        {edit_search_controls(edit_search, classified_count, len(rows), len(rows))}
+        {review_sort_controls(review_sort, query, tx_filter=tx_filter, exclude_credits=exclude_credits, start_date=start_date, end_date=end_date, edit_search=query)}
+        {edit_search_controls(query, raw_target_count, len(rows), len(rows), tx_filter=tx_filter, review_sort=review_sort, exclude_credits=exclude_credits, start_date=start_date, end_date=end_date)}
         <form method="post" action="/edit-classifications" class="review-batch-form" id="unified-edit-form">
+          {form_hidden_fields(tx_filter)}
           <div style="overflow-x:auto;">
             <table class="tx-table">
               <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
-              <tbody>{render_edit_rows(rows) if rows else '<tr><td colspan="9" class="empty">No matching classified rows.</td></tr>'}</tbody>
+              <tbody>{render_edit_rows(rows) if rows else f'<tr><td colspan="9" class="empty">{empty_msg}</td></tr>'}</tbody>
             </table>
           </div>
           {edit_batch_actions(rows)}
         </form>
         """
+    elif tx_filter == "last_statement":
+        ls = rows
+        ls_pending = [r for r in ls if (r["status"] or "") == "needs_review"]
+        ls_auto = [r for r in ls if (r["status"] or "") != "needs_review"]
+        raw_ls_count = len(ls)
+        if query:
+            ls_pending = filter_review_rows(ls_pending, query)
+            ls_auto = filter_editable_rows(ls_auto, query)
+        ls_pending = sort_review_rows(ls_pending, review_sort)
+        ls_auto = sorted(
+            ls_auto,
+            key=lambda r: (r["txn_date"], r["id"]),
+            reverse=(review_sort != "oldest"),
+        )
+        fname = esc((last_import or {}).get("filename") or "last statement")
+        body = f"""
+        <p class="empty">From {fname} — {len(ls_pending)} to review, {len(ls_auto)} auto.</p>
+        {review_sort_controls(review_sort, query, tx_filter="last_statement", exclude_credits=exclude_credits, start_date=start_date, end_date=end_date, edit_search=query)}
+        {review_search_controls(query, review_sort, raw_ls_count, len(ls_pending) + len(ls_auto), tx_filter="last_statement", exclude_credits=exclude_credits, start_date=start_date, end_date=end_date)}
+        <h3 class="tx-subhead">Needs review</h3>
+        <form method="post" action="/review" class="review-batch-form" id="unified-review-form">
+          {form_hidden_fields("last_statement")}
+          <div style="overflow-x:auto;">
+            <table class="tx-table">
+              <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Classify</th></tr></thead>
+              <tbody>{render_review_rows(ls_pending) if ls_pending else '<tr><td colspan="8" class="empty">Nothing waiting for review in this statement.</td></tr>'}</tbody>
+            </table>
+          </div>
+          {review_batch_actions(ls_pending)}
+        </form>
+        <h3 class="tx-subhead">Auto / classified</h3>
+        <form method="post" action="/edit-classifications" class="review-batch-form" id="unified-edit-form">
+          {form_hidden_fields("last_statement")}
+          <div style="overflow-x:auto;">
+            <table class="tx-table">
+              <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
+              <tbody>{render_edit_rows(ls_auto) if ls_auto else '<tr><td colspan="9" class="empty">No auto-classified rows in this statement.</td></tr>'}</tbody>
+            </table>
+          </div>
+          {edit_batch_actions(ls_auto)}
+        </form>
+        """
     else:  # all — show pending then classified (two forms)
         body = f"""
+        {review_sort_controls(review_sort, query, tx_filter="all", exclude_credits=exclude_credits, start_date=start_date, end_date=end_date, edit_search=query)}
+        {review_search_controls(query, review_sort, total_all, pending_count + classified_count, tx_filter="all", exclude_credits=exclude_credits, start_date=start_date, end_date=end_date)}
         <h3 class="tx-subhead">Needs review</h3>
-        <form method="post" action="/review" class="review-batch-form">
+        <form method="post" action="/review" class="review-batch-form" id="unified-review-form">
+          {form_hidden_fields("all")}
           <div style="overflow-x:auto;">
             <table class="tx-table">
               <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Classify</th></tr></thead>
@@ -1236,14 +1644,15 @@ def render_unified_transactions_section(
           {review_batch_actions(pending_rows)}
         </form>
         <h3 class="tx-subhead" style="margin-top:24px;">Classified</h3>
-        <form method="post" action="/edit-classifications" class="review-batch-form">
+        <form method="post" action="/edit-classifications" class="review-batch-form" id="unified-edit-form">
+          {form_hidden_fields("all")}
           <div style="overflow-x:auto;">
             <table class="tx-table">
               <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
-              <tbody>{render_edit_rows(classified_rows[:40]) if classified_rows else '<tr><td colspan="9" class="empty">None classified.</td></tr>'}</tbody>
+              <tbody>{render_edit_rows(classified_rows) if classified_rows else '<tr><td colspan="9" class="empty">None classified.</td></tr>'}</tbody>
             </table>
           </div>
-          {edit_batch_actions(classified_rows[:40])}
+          {edit_batch_actions(classified_rows)}
         </form>
         """
 
@@ -1528,6 +1937,9 @@ def render_mobile_bottom_nav(pending_badge_count: int = 0) -> str:
     )
     return f"""
     <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
+      <a href="#import-add" class="mnav-item" data-tab-jump="import-add" data-tab="import-add">
+        <span class="mnav-label">Import</span>
+      </a>
       <a href="#dashboard" class="mnav-item" data-tab-jump="dashboard" data-tab="dashboard">
         <span class="mnav-label">Home</span>
       </a>
@@ -1536,9 +1948,6 @@ def render_mobile_bottom_nav(pending_badge_count: int = 0) -> str:
       </a>
       <a href="#contacts" class="mnav-item" data-tab-jump="contacts" data-tab="contacts">
         <span class="mnav-label">People</span>
-      </a>
-      <a href="#import-add" class="mnav-item" data-tab-jump="import-add" data-tab="import-add">
-        <span class="mnav-label">Import</span>
       </a>
       <a href="/app/" class="mnav-item mnav-app">
         <span class="mnav-label">App</span>
@@ -1646,6 +2055,11 @@ def page(
     partner_balances: list[dict] | None = None,
     tx_filter: str = "needs_review",
     exclude_credits: bool = False,
+    last_import: dict | None = None,
+    gmail_on: bool = False,
+    gmail_address: str | None = None,
+    pdf_password_saved: bool = False,
+    gemini_key_saved: bool = False,
 ) -> bytes:
     """Assemble the full dashboard HTML page from pre-fetched data."""
     all_users = all_users or []
@@ -1655,49 +2069,56 @@ def page(
     edit_search = edit_search.strip()
     person_search = person_search.strip()
     tx_filter = tx_filter if tx_filter in {
-        "needs_review", "classified", "shared", "loan", "all"
+        "needs_review", "classified", "shared", "loan", "all", "last_statement"
     } else "needs_review"
+    last_import = last_import or None
     # Full queue sizes for Home attention (not period-filtered — all-time)
-    attention_review_count = len(data.get("pending") or [])
+    pending_items = [
+        r for r in (data.get("transactions") or [])
+        if ((r["status"] if hasattr(r, "keys") and "status" in r.keys() else r.get("status")) if isinstance(r, dict) or hasattr(r, "keys") else getattr(r, "status", None)) == "needs_review"
+    ]
+    attention_review_count = len(pending_items if pending_items or not data.get("pending") else data.get("pending") or [])
     attention_pt_count = len(data.get("passthrough_candidates") or [])
+    if tx_filter == "needs_review" and not attention_review_count and data.get("transactions"):
+        tx_filter = "classified"
 
     # Resolve the active date range (for dashboard charts + period badge counts only)
     min_date, max_date = date_bounds(data.get("transactions") or [])
     # Track whether the user explicitly chose a date range
     period_explicit = bool(start_date or end_date)
-    # Default: current calendar month (not full history)
-    if not start_date and not end_date:
-        today = date.today()
-        month_start = today.replace(day=1).isoformat()
-        if today.month == 12:
-            next_month = today.replace(year=today.year + 1, month=1, day=1)
-        else:
-            next_month = today.replace(month=today.month + 1, day=1)
-        month_end = (next_month - timedelta(days=1)).isoformat()
-        start_date = month_start
-        end_date = month_end
-        # Clamp to available data when possible
-        if min_date and start_date < min_date:
-            start_date = min_date
-        if max_date and end_date > max_date:
-            end_date = max_date
+    li_start = str((last_import or {}).get("start") or "")[:10]
+    li_end = str((last_import or {}).get("end") or "")[:10]
+    # Last-statement chip uses import dates; Home default stays current month
+    # so classified edits are not hidden after review.
+    if tx_filter == "last_statement" and not period_explicit and li_start and li_end:
+        start_date = li_start
+        end_date = li_end
+    elif not start_date and not end_date:
+        from .services import default_dashboard_period
+
+        start_date, end_date = default_dashboard_period(date.today(), min_date, max_date)
     else:
         start_date = start_date if start_date else min_date
         end_date = end_date if end_date else max_date
 
+    if start_date and end_date and start_date > end_date:
+        start_date = min_date
+
+
     def _in_period(r):
-        txn_date = str(row_get(r, "txn_date") or "")
-        if start_date and txn_date < start_date:
+        txn_date = str(row_get(r, "txn_date") or "")[:10]
+        start_str = str(start_date or "")[:10]
+        end_str = str(end_date or "")[:10]
+        if start_str and txn_date < start_str:
             return False
-        if end_date and txn_date > end_date:
+        if end_str and txn_date > end_str:
             return False
         return True
 
-    # Filter the pending (needs-review) queue to the selected period always —
-    # keeps the badge count and review list aligned with what the user is looking at.
-    filtered_review = filter_review_rows(
-        [r for r in (data.get("pending") or []) if _in_period(r)], review_search
-    )
+    # Apply date period to ALL tabs so everything is in sync with the dashboard.
+    # The attention strip (captured above) remains all-time.
+    pending_source = [r for r in (data.get("pending") or []) if _in_period(r)]
+    filtered_review = filter_review_rows(pending_source, review_search)
     pending_review = sort_review_rows(filtered_review, review_sort)
     # Split review queue by debit/credit (legacy split still used for badge counts)
     debit_review = [r for r in pending_review if row_get(r, "debit") and float(row_get(r, "debit") or 0) > 0]
@@ -1727,40 +2148,47 @@ def page(
         attention_review_count, attention_pt_count, open_shared_null
     )
     mobile_nav_html = render_mobile_bottom_nav(pending_badge_count)
-    # For Transactions/Search/MoneyFlow tabs: only apply period filter when the user
-    # explicitly chose a date range. On the auto-default (current month), show all-time
-    # so no data is hidden if your data is from a previous month.
-    tx_source = (
-        [r for r in data["transactions"] if _in_period(r)]
-        if period_explicit
-        else data["transactions"]
-    )
-    shared_source = (
-        [r for r in (data.get("shared") or []) if _in_period(r)]
-        if period_explicit
-        else (data.get("shared") or [])
-    )
-    editable_all = [row for row in tx_source if row["status"] != "needs_review"]
-    filtered_edit = filter_editable_rows(tx_source, edit_search)
-    # Show more rows in unified workspace
-    editable_rows = filtered_edit if edit_search else filtered_edit[:50]
+    # Home / money flow stay on the dashboard period
+    tx_source = [r for r in data["transactions"] if _in_period(r)]
+    last_import_id = (last_import or {}).get("import_id")
+    last_statement_all = []
+    if last_import_id is not None:
+        last_statement_all = [
+            r for r in data["transactions"]
+            if str(r["import_id"]) == str(last_import_id)
+        ]
+    # Needs review / Classified / Shared = all rows (matches dashboard 125).
+    # Last statement chip is the last WhatsApp file only.
+    if period_explicit:
+        workspace_rows = tx_source
+    else:
+        workspace_rows = list(data.get("transactions") or [])
+    # Dashboard charts/totals use the same period + exclude_business
+    period_rows = filter_dashboard_rows(data["transactions"], start_date, end_date, exclude_business)
+    shared_source = [
+        r for r in workspace_rows
+        if (row_get(r, "expense_type") or "") == "Shared"
+        and float(row_get(r, "debit") or 0) > 0
+    ]
+
     unified_tx_html = render_unified_transactions_section(
-        unified_pending,
-        editable_rows,
+        workspace_rows,
         loan_suggestions=data.get("loan_suggestions") or [],
         tx_filter=tx_filter,
         review_sort=review_sort,
         review_search=review_search,
         edit_search=edit_search,
         exclude_credits=exclude_credits,
+        start_date=start_date if period_explicit else "",
+        end_date=end_date if period_explicit else "",
+        last_import=last_import,
+        last_statement_rows=last_statement_all,
     )
     person_matches = sorted(
         filter_transactions_by_text(tx_source, person_search),
         key=lambda row: (row["txn_date"], row["id"]),
         reverse=True,
     )
-    # Dashboard charts/totals always use the resolved period (default or explicit)
-    period_rows = filter_dashboard_rows(data["transactions"], start_date, end_date, exclude_business)
     period_totals = dashboard_totals(period_rows, use_my_share)
     period_categories = {
         'expenses': expenses_by_category(period_rows, use_my_share=True),
@@ -1772,77 +2200,26 @@ def page(
         'debits': debits_by_merchant(period_rows),
         'credits': credits_by_merchant(period_rows)
     }
+    months_in_period = {
+        str(
+            (r["txn_date"] if hasattr(r, "keys") and "txn_date" in r.keys() else r.get("txn_date"))
+            if isinstance(r, dict) or hasattr(r, "keys")
+            else getattr(r, "txn_date", "")
+        )[:7]
+        for r in period_rows
+        if r
+    }
+    months_in_period.discard("")
+    if period_explicit and len(months_in_period) >= 2:
+        trend_source_rows = period_rows
+    else:
+        trend_source_rows = filter_dashboard_rows(
+            data.get("transactions") or [],
+            end_date=end_date if period_explicit else "",
+            exclude_business=exclude_business,
+        )
+    period_trends = monthly_trends_dict(trend_source_rows)
     message_html = f'<div class="notice">{esc(message)}</div>' if message else ""
-    error_html = f'<div class="notice error">{esc(error)}</div>' if error else ""
-    person_section = collapsible_section(
-        "person-search",
-        "Credit / debit search",
-        f"""
-        {person_search_controls(person_search, len(person_matches))}
-        {render_credit_debit_graph(person_matches, person_search)}
-        <table>
-          <thead><tr><th>Date</th><th>Merchant / text</th><th>Credit</th><th>Debit</th><th>Amount</th><th>Category</th></tr></thead>
-          <tbody>{render_person_transaction_rows(person_matches)}</tbody>
-        </table>
-        """,
-        f"{len(person_matches)} match(es)" if person_search else "Search people or statement text",
-        bool(person_search),
-    )
-    review_section = collapsible_section(
-        "review",
-        "Transactions awaiting review",
-        f"""
-        {review_sort_controls(review_sort, review_search)}
-        {review_search_controls(review_search, review_sort, len(data['pending']), len(filtered_review))}
-        <form method="post" action="/review" class="review-batch-form">
-          <table>
-            <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th colspan="5">Confirmation</th></tr></thead>
-            <tbody>{render_review_rows(pending_review)}</tbody>
-          </table>
-          {review_batch_actions(pending_review)}
-        </form>
-        """,
-        f"{len(data['pending'])} pending",
-        bool(review_search),
-    )
-    edit_section = collapsible_section(
-        "edit-classifications",
-        "Edit classifications",
-        f"""
-        {edit_search_controls(edit_search, len(editable_all), len(filtered_edit), len(editable_rows))}
-        <form method="post" action="/edit-classifications" class="review-batch-form">
-          <table>
-            <thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Status</th><th colspan="5">Correction</th></tr></thead>
-            <tbody>{render_edit_rows(editable_rows)}</tbody>
-          </table>
-          {edit_batch_actions(editable_rows)}
-        </form>
-        """,
-        f"{len(editable_all)} classified",
-        bool(edit_search),
-    )
-    rules_section = collapsible_section(
-        "merchant-rules",
-        "Merchant knowledge base",
-        f"""
-        <table>
-          <thead><tr><th>Merchant</th><th>Category</th><th>Type</th><th>Split</th><th>Uses</th></tr></thead>
-          <tbody>{render_rules(data['rules'])}</tbody>
-        </table>
-        """,
-        f"{len(data['rules'])} rule(s)",
-    )
-    shared_section = collapsible_section(
-        "shared-expenses",
-        "Shared expenses",
-        f"""
-        <table>
-          <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th></tr></thead>
-          <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td></tr>" for r in shared_source) or '<tr><td colspan="6" class="empty">No shared expenses yet.</td></tr>'}</tbody>
-        </table>
-        """,
-        f"{len(shared_source)} shared",
-    )
     # Contact datalist for shared-with picker
     contact_options = ""
     for item in data.get("contacts") or []:
@@ -1867,7 +2244,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=20">
+  <link rel="stylesheet" href="/style.css?v=22">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -1889,6 +2266,10 @@ def page(
   <div class="app-container">
     <aside class="sidebar">
       <nav class="nav-tabs" aria-label="Main Navigation">
+        <a href="#import-add" class="tab-link" data-tab="import-add">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <span>Import</span>
+        </a>
         <a href="#dashboard" class="tab-link active" data-tab="dashboard">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
           <span>Home</span>
@@ -1901,10 +2282,6 @@ def page(
         <a href="#contacts" class="tab-link" data-tab="contacts">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
           <span>People</span>
-        </a>
-        <a href="#import-add" class="tab-link" data-tab="import-add">
-          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-          <span>Import</span>
         </a>
         <details class="nav-more">
           <summary class="nav-more-summary">
@@ -1921,6 +2298,13 @@ def page(
             <a href="#rules" class="tab-link" data-tab="rules">
               <span>Rules &amp; shared</span>
             </a>
+            <form class="gemini-key-form" method="post" action="/settings/gemini">
+              <label>Gemini key
+                <input type="password" name="gemini_api_key" autocomplete="off" placeholder="AIza…">
+              </label>
+              <button type="submit">Save</button>
+              <span class="muted">{'Saved' if gemini_key_saved else 'For Ask on /app/'}</span>
+            </form>
           </div>
         </details>
       </nav>
@@ -1954,8 +2338,8 @@ def page(
 
         <div class="grid two" style="margin-top:24px;">
           <section>
-            <h2>Total credits / debits</h2>
-            {render_credit_debit_pie(period_totals)}
+            <h2 id="chart-trend-title">Monthly expense trend</h2>
+            {render_monthly_trend_chart(period_trends)}
           </section>
           <section>
             <h2 id="chart-category-title">Expenses by category</h2>
@@ -1981,24 +2365,23 @@ def page(
       <!-- Tab 2: Import & Add -->
       <div id="pane-import-add" class="tab-pane">
         <div class="grid two">
-          <section>
-            <h2>Import weekly SBI statement</h2>
-            <form class="import" method="post" action="/import" enctype="multipart/form-data">
-              <label>Statement PDF <input type="file" name="statement" accept="application/pdf" required></label>
-              <label>Password <input type="password" name="password" autocomplete="off"></label>
-              <button type="submit">Import</button>
-            </form>
-          </section>
+          {render_import_statement_section(
+              last_import,
+              gmail_on=gmail_on,
+              gmail_address=gmail_address,
+              pdf_password_saved=pdf_password_saved,
+          )}
           {render_manual_transaction_form()}
         </div>
         
         <section style="margin-top:24px;">
           <h2>Money Flow & Cash Transfers</h2>
+          {f'<p class="empty">Period {esc(start_date)} to {esc(end_date)}.' + (f' Last import {(last_import or {}).get("filename") or ""}. <a href="/?tx_filter=last_statement#review">Last statement only</a>' if last_import and not period_explicit else "") + "</p>"}
           {render_money_flows_view(tx_source)}
         </section>
 
         <section style="margin-top:24px;">
-          <h2>Recent Uploaded Statements & File Logs</h2>
+          <h2>Recent</h2>
           {render_recent_imports_view(data.get('recent_imports', []))}
         </section>
       </div>
@@ -2017,21 +2400,6 @@ def page(
       <div id="pane-review" class="tab-pane">
         {partner_datalist}
         {unified_tx_html}
-      </div>
-
-      <!-- Tab 5: legacy hash #transactions → same unified workspace -->
-      <div id="pane-transactions" class="tab-pane">
-        {partner_datalist}
-        {render_unified_transactions_section(
-            unified_pending,
-            editable_rows,
-            loan_suggestions=data.get("loan_suggestions") or [],
-            tx_filter="classified" if tx_filter == "needs_review" else tx_filter,
-            review_sort=review_sort,
-            review_search=review_search,
-            edit_search=edit_search,
-            exclude_credits=exclude_credits,
-        )}
       </div>
 
       <!-- Tab 6: Search -->
@@ -2070,7 +2438,7 @@ def page(
             <div style="overflow-x: auto; margin-top:12px;">
               <table>
                 <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th><th>Partner</th></tr></thead>
-                <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{money(r['debit'])}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td><td>{esc((r['shared_with'] if hasattr(r, 'keys') and 'shared_with' in r.keys() and r['shared_with'] else None) or '—')}</td></tr>" for r in data['shared']) or '<tr><td colspan="7" class="empty">No shared expenses yet.</td></tr>'}</tbody>
+                <tbody>{''.join(f"<tr><td>{esc(r['txn_date'])}</td><td>{esc(r['merchant_display'])}</td><td>{esc(r['category'])}</td><td>{bank_amount_html(r)}</td><td>{split_display(r['split_ratio'])}</td><td>{money(r['my_share'])}</td><td>{esc((r['shared_with'] if hasattr(r, 'keys') and 'shared_with' in r.keys() and r['shared_with'] else None) or '—')}</td></tr>" for r in shared_source) or '<tr><td colspan="7" class="empty">No shared expenses yet.</td></tr>'}</tbody>
               </table>
             </div>
           </section>

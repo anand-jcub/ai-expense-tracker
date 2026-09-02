@@ -75,8 +75,148 @@ def init_auth_db() -> None:
             """
         )
         conn.commit()
+        _ensure_statement_password_column(conn)
     finally:
         conn.close()
+
+
+def _ensure_statement_password_column(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    changed = False
+    if "statement_pdf_password" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN statement_pdf_password TEXT")
+        changed = True
+    if "gmail_address" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN gmail_address TEXT")
+        changed = True
+    if "gmail_app_password" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN gmail_app_password TEXT")
+        changed = True
+    if "gemini_api_key" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN gemini_api_key TEXT")
+        changed = True
+    if changed:
+        conn.commit()
+
+
+def get_statement_password(username: str) -> str | None:
+    """PDF unlock password saved in the tool for this user (not the login password)."""
+    username = (username or "").strip().lower()
+    if not username:
+        return None
+    init_auth_db()
+    conn = get_auth_connection()
+    try:
+        _ensure_statement_password_column(conn)
+        row = conn.execute(
+            "SELECT statement_pdf_password FROM users WHERE LOWER(username) = ?",
+            (username,),
+        ).fetchone()
+        if not row:
+            return None
+        pw = (row["statement_pdf_password"] or "").strip()
+        return pw or None
+    finally:
+        conn.close()
+
+
+def set_statement_password(username: str, password: str) -> None:
+    """Remember the statement PDF password after a successful unlock."""
+    username = (username or "").strip().lower()
+    password = (password or "").strip()
+    if not username or not password:
+        return
+    init_auth_db()
+    conn = get_auth_connection()
+    try:
+        _ensure_statement_password_column(conn)
+        conn.execute(
+            "UPDATE users SET statement_pdf_password = ? WHERE LOWER(username) = ?",
+            (password, username),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_gmail_imap(username: str) -> tuple[str | None, str | None]:
+    username = (username or "").strip().lower()
+    if not username:
+        return None, None
+    init_auth_db()
+    conn = get_auth_connection()
+    try:
+        _ensure_statement_password_column(conn)
+        row = conn.execute(
+            "SELECT gmail_address, gmail_app_password FROM users WHERE LOWER(username) = ?",
+            (username,),
+        ).fetchone()
+        if not row:
+            return None, None
+        addr = (row["gmail_address"] or "").strip()
+        pw = (row["gmail_app_password"] or "").strip()
+        return (addr or None, pw or None)
+    finally:
+        conn.close()
+
+
+def set_gmail_imap(username: str, address: str, app_password: str) -> None:
+    username = (username or "").strip().lower()
+    address = (address or "").strip()
+    app_password = (app_password or "").strip().replace(" ", "")
+    if not username or not address or not app_password:
+        return
+    init_auth_db()
+    conn = get_auth_connection()
+    try:
+        _ensure_statement_password_column(conn)
+        conn.execute(
+            "UPDATE users SET gmail_address = ?, gmail_app_password = ? WHERE LOWER(username) = ?",
+            (address, app_password, username),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_gemini_api_key(username: str) -> str | None:
+    """Per-user Gemini key saved in the desktop app. Never log this."""
+    username = (username or "").strip().lower()
+    if not username:
+        return None
+    init_auth_db()
+    conn = get_auth_connection()
+    try:
+        _ensure_statement_password_column(conn)
+        row = conn.execute(
+            "SELECT gemini_api_key FROM users WHERE LOWER(username) = ?",
+            (username,),
+        ).fetchone()
+        if not row:
+            return None
+        key = (row["gemini_api_key"] or "").strip()
+        return key or None
+    finally:
+        conn.close()
+
+
+def set_gemini_api_key(username: str, api_key: str) -> None:
+    username = (username or "").strip().lower()
+    api_key = (api_key or "").strip()
+    if not username:
+        return
+    init_auth_db()
+    conn = get_auth_connection()
+    try:
+        _ensure_statement_password_column(conn)
+        conn.execute(
+            "UPDATE users SET gemini_api_key = ? WHERE LOWER(username) = ?",
+            (api_key or None, username),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 def hash_password(password: str) -> str:
     """Hash password using PBKDF2 with SHA-256 and a random salt."""
@@ -253,6 +393,45 @@ def create_api_token(
     except Exception as exc:
         logger.exception("Error creating API token")
         return None, f"Failed to create token: {exc}"
+    finally:
+        conn.close()
+
+
+def issue_local_api_token(username: str, *, label: str = "cloud-hub", days_valid: int = 365) -> str | None:
+    """Mint a Bearer token on this machine (no password). For cloud_sync only."""
+    username = (username or "").strip().lower()
+    if not username:
+        return None
+    init_auth_db()
+    conn = get_auth_connection()
+    try:
+        row = conn.execute(
+            "SELECT username FROM users WHERE LOWER(username) = ?",
+            (username,),
+        ).fetchone()
+        if not row:
+            return None
+        raw = "exp_" + uuid.uuid4().hex + uuid.uuid4().hex[:16]
+        now = utc_now()
+        conn.execute(
+            """
+            INSERT INTO api_tokens (token_id, token_hash, username, label, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                _hash_token(raw),
+                username,
+                (label or "cloud-hub").strip()[:80],
+                format_iso(now),
+                format_iso(now + timedelta(days=max(1, int(days_valid)))),
+            ),
+        )
+        conn.commit()
+        return raw
+    except Exception:
+        logger.exception("issue_local_api_token failed")
+        return None
     finally:
         conn.close()
 

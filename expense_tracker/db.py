@@ -752,6 +752,8 @@ def review_transaction(
             pass
     if sw_text or sw_cid:
         expense_type = "Shared"
+    if expense_type != "Shared":
+        split_ratio = Decimal("1")
 
     now = utc_now()
     rule_id = None

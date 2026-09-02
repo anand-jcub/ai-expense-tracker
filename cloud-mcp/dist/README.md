@@ -1,0 +1,1 @@
+This folder contains the built output assets for the worker "expense-tracker-mcp-hub" generated at 2026-08-13T11:13:48.068Z.

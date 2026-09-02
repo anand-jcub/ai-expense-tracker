@@ -107,6 +107,24 @@ class AuthTests(unittest.TestCase):
         delete_session(session_id)
         self.assertIsNone(verify_session(session_id))
 
+    def test_statement_password_persist(self) -> None:
+        register_user("alice", "alicepassword")
+        self.assertIsNone(auth.get_statement_password("alice"))
+        auth.set_statement_password("alice", "sbi-dob")
+        self.assertEqual(auth.get_statement_password("alice"), "sbi-dob")
+        self.assertIsNone(auth.get_statement_password("nobody"))
+
+    def test_gemini_api_key_persist(self) -> None:
+        register_user("alice", "alicepassword")
+        self.assertIsNone(auth.get_gemini_api_key("alice"))
+        auth.set_gemini_api_key("alice", "  AIza-test  ")
+        self.assertEqual(auth.get_gemini_api_key("alice"), "AIza-test")
+        from expense_tracker.assistant.provider import api_key, has_key
+
+        self.assertTrue(has_key("alice"))
+        self.assertEqual(api_key("alice"), "AIza-test")
+        self.assertFalse(has_key("nobody"))
+
     def test_dynamic_db_connection_isolation(self) -> None:
         # Register two users
         register_user("alice", "alicepass")
@@ -186,6 +204,13 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(is_authenticated)
         self.assertEqual(db.request_context.db_path, db.DATA_DIR / "expenses_alice.db")
         self.assertEqual(mock_handler.current_user, "alice")
+
+    def test_safe_next(self) -> None:
+        self.assertEqual(web.ExpenseHandler._safe_next("/app/"), "/app/")
+        self.assertEqual(web.ExpenseHandler._safe_next("/"), "/")
+        self.assertEqual(web.ExpenseHandler._safe_next("https://evil.example/"), "")
+        self.assertEqual(web.ExpenseHandler._safe_next("//evil"), "")
+        self.assertEqual(web.ExpenseHandler._safe_next("/login"), "")
 
 
 if __name__ == "__main__":
