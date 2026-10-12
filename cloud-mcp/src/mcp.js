@@ -23,46 +23,6 @@ const MCP_CORS = {
 
 const TOOLS = [
   {
-    name: 'list_balances',
-    description:
-      'List khata (who-owes-whom) balances. net > 0 means they owe you; net < 0 means you owe them.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        nonzero_only: {
-          type: 'boolean',
-          description: 'If true (default), only non-zero balances.',
-        },
-      },
-    },
-  },
-  {
-    name: 'get_balance_for_person',
-    description: 'Get khata balance for one person by name or contact id (e.g. Ranjima).',
-    inputSchema: {
-      type: 'object',
-      required: ['name_or_id'],
-      properties: {
-        name_or_id: {
-          type: 'string',
-          description: 'Contact name, alias, or numeric id.',
-        },
-      },
-    },
-  },
-  {
-    name: 'get_person_ledger',
-    description: 'Ledger history for a contact (newest first).',
-    inputSchema: {
-      type: 'object',
-      required: ['name_or_id'],
-      properties: {
-        name_or_id: { type: 'string' },
-        limit: { type: 'number', description: 'Max entries (default 20, max 40).' },
-      },
-    },
-  },
-  {
     name: 'get_dashboard_summary',
     description: 'Spend summary for a period (synced dashboard or derived from transactions).',
     inputSchema: {
@@ -333,62 +293,10 @@ function dispatchTool(name, args, snap) {
           : 'No snapshot — run sync-cloud.cmd on the PC.',
       };
 
-    case 'list_balances': {
-      const nonzero = args.nonzero_only !== false;
-      let items = snap.balances || [];
-      if (nonzero) items = items.filter((b) => Number(b.net || 0) !== 0);
-      items = [...items]
-        .sort((a, b) => Math.abs(Number(b.net || 0)) - Math.abs(Number(a.net || 0)))
-        .slice(0, 40)
-        .map((b) => ({
-          contact_id: b.contact_id,
-          contact_name: b.contact_name,
-          net: b.net,
-          status: b.status,
-          they_owe_you: b.they_owe_you,
-          you_owe_them: b.you_owe_them,
-          entry_count: b.entry_count,
-        }));
-      return { count: items.length, balances: items };
-    }
-
-    case 'get_balance_for_person': {
-      const hit = matchContact(snap, args.name_or_id);
-      if (!hit) return { error: `No contact matching ${JSON.stringify(args.name_or_id)}` };
-      const net = Number(hit.net || 0);
-      const cname = hit.contact_name || 'They';
-      let answer;
-      if (net > 0) answer = `${cname} owes you ₹${net.toLocaleString('en-IN')}.`;
-      else if (net < 0) answer = `You owe ${cname} ₹${Math.abs(net).toLocaleString('en-IN')}.`;
-      else answer = `${cname} is settled (₹0).`;
-      return {
-        contact_id: hit.contact_id,
-        contact_name: hit.contact_name,
-        net: hit.net,
-        status: hit.status,
-        they_owe_you: hit.they_owe_you,
-        you_owe_them: hit.you_owe_them,
-        entry_count: hit.entry_count,
-        answer,
-      };
-    }
-
-    case 'get_person_ledger': {
-      const hit = matchContact(snap, args.name_or_id);
-      if (!hit) return { error: `No contact matching ${JSON.stringify(args.name_or_id)}` };
-      const id = String(hit.contact_id);
-      const led = snap.ledgers?.[id] || {
-        contact: { id: hit.contact_id, name: hit.contact_name },
-        balance: { net: hit.net, status: hit.status },
-        entries: [],
-      };
-      const lim = Math.max(1, Math.min(Number(args.limit) || 20, 40));
-      return {
-        contact: led.contact,
-        balance: led.balance,
-        entries: (led.entries || []).slice(0, lim),
-      };
-    }
+    case 'list_balances':
+    case 'get_balance_for_person':
+    case 'get_person_ledger':
+      return { error: 'The ledger and contact balances system has been decommissioned.' };
 
     case 'get_dashboard_summary': {
       if (snap.dashboard && !args.start_date && !args.end_date) {
@@ -484,7 +392,7 @@ async function handleJsonRpc(body, env) {
             },
             serverInfo: { name: 'expense-tracker', version: '1.1.0' },
             instructions:
-              'Personal expense + khata. net > 0 means they owe the user. Prefer list_balances, get_balance_for_person, search_transactions (small limits). Call get_sync_status if data looks stale.',
+              'Personal expense tracker. Prefer get_dashboard_summary, search_transactions (small limits). Call get_sync_status if data looks stale.',
           },
         };
       }
@@ -525,11 +433,6 @@ async function handleJsonRpc(body, env) {
           result: {
             resources: [
               {
-                uri: 'expense://balances',
-                name: 'Khata balances',
-                mimeType: 'application/json',
-              },
-              {
                 uri: 'expense://sync-status',
                 name: 'Sync status',
                 mimeType: 'application/json',
@@ -541,9 +444,7 @@ async function handleJsonRpc(body, env) {
       case 'resources/read': {
         const uri = String(body.params?.uri || '');
         const snap = await loadSnapshot(env);
-        let content;
-        if (uri.includes('sync')) content = JSON.stringify(dispatchTool('get_sync_status', {}, snap));
-        else content = JSON.stringify(dispatchTool('list_balances', {}, snap));
+        const content = JSON.stringify(dispatchTool('get_sync_status', {}, snap));
         return {
           jsonrpc: '2.0',
           id,
@@ -559,7 +460,7 @@ async function handleJsonRpc(body, env) {
             prompts: [
               {
                 name: 'money_briefing',
-                description: 'Who owes what + recent spend summary.',
+                description: 'Recent spend summary.',
               },
             ],
           },
@@ -577,7 +478,7 @@ async function handleJsonRpc(body, env) {
                   role: 'user',
                   content: {
                     type: 'text',
-                    text: 'Call get_sync_status, list_balances, and get_dashboard_summary. Summarise who owes money and recent spending.',
+                    text: 'Call get_sync_status and get_dashboard_summary. Summarise recent spending.',
                   },
                 },
               ],
@@ -742,11 +643,13 @@ export async function handleSync(request, env) {
     username: snap.username,
     syncedAt: snap.syncedAt,
     dashboard: snap.dashboard,
+    dashboard_all: body.dashboard_all || null,
     balances: snap.balances,
     books: body.books && typeof body.books === 'object' ? body.books : { bank: [], khata: [] },
     people: Array.isArray(body.people) ? body.people : snap.balances,
     categories: Array.isArray(body.categories) ? body.categories : [],
     expense_types: Array.isArray(body.expense_types) ? body.expense_types : [],
+    transactions: snap.transactions || [],
   };
 
   await env.STORE.put(SNAPSHOT_KEY, JSON.stringify(snap));

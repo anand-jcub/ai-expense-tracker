@@ -86,9 +86,20 @@ def import_statement_bytes(
                 uploaded_by=username,
             )
             apply_learned_rules_to_pending(conn)
+            try:
+                from .highnes_ledger import reconcile_highnes_statement
+                reconcile_highnes_statement(conn)
+            except Exception:
+                logger.exception("Failed to auto-reconcile Highnes statement during import.")
             conn.commit()
             stats = _import_stats(conn, import_id)
         set_statement_password(username, password)
+        try:
+            from .cloud_sync import trigger_cloud_sync_bg
+
+            trigger_cloud_sync_bg(username)
+        except Exception:
+            logger.exception("Cloud sync after import failed to start")
         already = inserted == 0 and parsed > 0
         payload = {
             "ok": True,
@@ -112,6 +123,20 @@ def import_statement_bytes(
                 trigger_cloud_sync_bg(username)
             except Exception:
                 pass
+            if payload.get("pending", 0) > 0:
+                try:
+                    from .notifications import trigger_statement_review_notification_bg
+
+                    trigger_statement_review_notification_bg(
+                        username=username,
+                        filename=filename or "statement.pdf",
+                        pending_count=int(payload.get("pending", 0)),
+                        inserted_count=int(payload.get("inserted", 0)),
+                        start_date=stats.get("start"),
+                        end_date=stats.get("end"),
+                    )
+                except Exception:
+                    logger.exception("Failed to dispatch review notification")
         return payload
     except PdfReadError as exc:
         raise ValueError(
@@ -126,8 +151,8 @@ def _import_stats(conn, import_id: int) -> dict[str, Any]:
     row = conn.execute(
         """
         select min(t.txn_date) as start, max(t.txn_date) as end,
-               sum(case when c.status = 'needs_review' then 1 else 0 end) as pending,
-               sum(case when c.status != 'needs_review' then 1 else 0 end) as auto
+               sum(case when c.status = 'needs_review' and cast(t.debit as float) > 0 then 1 else 0 end) as pending,
+               sum(case when not (c.status = 'needs_review' and cast(t.debit as float) > 0) then 1 else 0 end) as auto
         from transactions t
         join classifications c on c.transaction_id = t.id
         where t.import_id = ?

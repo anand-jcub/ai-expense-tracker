@@ -28,7 +28,6 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from expense_tracker.auth import issue_local_api_token, verify_api_token
-from expense_tracker.contacts import get_all_balances, get_ledger
 from expense_tracker.db import connect, export_rows
 from expense_tracker.services import CATEGORIES, EXPENSE_TYPES, dashboard_summary_payload
 
@@ -70,65 +69,18 @@ def build_snapshot(username: str) -> dict[str, Any]:
         raise FileNotFoundError(f"No database for user '{username}' at {db_path}")
 
     with connect(db_path) as conn:
-        bal_items = get_all_balances(conn)
-        balances = []
+        balances: list[dict[str, Any]] = []
         ledgers: dict[str, Any] = {}
-        for item in bal_items:
-            c = item.get("contact") or {}
-            bal = item.get("balance") or {}
-            cid = c.get("id")
-            row = {
-                "contact_id": cid,
-                "contact_name": c.get("name"),
-                "net": _jsonable(bal.get("net")),
-                "status": bal.get("status"),
-                "they_owe_you": _jsonable(bal.get("they_owe_you")),
-                "you_owe_them": _jsonable(bal.get("you_owe_them")),
-                "entry_count": bal.get("entry_count"),
-                "aliases": c.get("aliases") or [],
-            }
-            balances.append(row)
-            if cid is not None:
-                try:
-                    led = get_ledger(conn, int(cid))
-                    entries = list(reversed(led.get("entries") or []))[:80]
-                    slim = []
-                    for e in entries:
-                        slim.append(
-                            {
-                                "date": e.get("entry_date"),
-                                "direction": e.get("direction"),
-                                "amount": _jsonable(e.get("amount")),
-                                "purpose": e.get("purpose"),
-                                "is_passthrough": bool(e.get("is_passthrough")),
-                                "notes": e.get("notes"),
-                                "running_balance": _jsonable(e.get("running_balance")),
-                            }
-                        )
-                    b2 = led.get("balance") or {}
-                    ledgers[str(cid)] = {
-                        "contact": {
-                            "id": (led.get("contact") or {}).get("id"),
-                            "name": (led.get("contact") or {}).get("name"),
-                        },
-                        "balance": {
-                            "net": _jsonable(b2.get("net")),
-                            "status": b2.get("status"),
-                        },
-                        "entries": slim,
-                    }
-                except Exception:
-                    pass
-
         txns = [_jsonable(dict(r)) for r in export_rows(conn)]
         # Cap for KV size
         if len(txns) > 5000:
             txns = txns[-5000:]
 
         dashboard = dashboard_summary_payload(conn, exclude_business=True)
+        dashboard_all = dashboard_summary_payload(conn, exclude_business=False)
         books = _slim_books(txns, ledgers)
 
-    people = [b for b in balances if _looks_like_person(b.get("contact_name"))]
+    people: list[dict[str, Any]] = []
     return {
         "username": username.lower(),
         "balances": balances,
@@ -136,6 +88,7 @@ def build_snapshot(username: str) -> dict[str, Any]:
         "ledgers": ledgers,
         "transactions": txns,
         "dashboard": dashboard,
+        "dashboard_all": dashboard_all,
         "books": books,
         "categories": list(CATEGORIES),
         "expense_types": list(EXPENSE_TYPES),
@@ -164,6 +117,7 @@ def _slim_books(txns: list, ledgers: dict) -> dict[str, Any]:
                 "debit": t.get("debit") or 0,
                 "credit": t.get("credit") or 0,
                 "category": t.get("category"),
+                "type": t.get("expense_type") or "Personal",
             }
         )
         if len(bank) >= 800:
@@ -398,6 +352,40 @@ def _live_bridge(username: str) -> dict[str, str] | None:
     return {"url": live_url.rstrip("/"), "token": token}
 
 
+def push_highnes_ledger(base_url: str, key: str, timeout: int = 60) -> dict[str, Any]:
+    """Publish the Highnes ledger to Cloudflare so the share page works laptop-off."""
+    from .db import DATA_DIR, connect
+    from .highnes_ledger import get_highnes_ledger_summary, get_or_create_share_key
+
+    db_path = DATA_DIR / "expenses_anand.db"
+    if not db_path.is_file():
+        return {"ok": False, "error": "no anand database"}
+    with connect(db_path) as conn:
+        summary = get_highnes_ledger_summary(conn)
+    # Drop bulky nested objects the public page does not need if any are huge.
+    share_key = get_or_create_share_key(DATA_DIR)
+    payload = {"share_key": share_key, "summary": summary}
+    url = f"{base_url.rstrip('/')}/sync/highnes?key={urllib.parse.quote(key)}"
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Sync-Key": key,
+            "User-Agent": "expense-tracker-cloud-sync/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {"ok": True}
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Highnes sync HTTP {exc.code}: {err_body}") from exc
+
+
 def sync_user_safe(username: str) -> bool:
     try:
         user = (username or "anand").strip().lower()
@@ -407,6 +395,10 @@ def sync_user_safe(username: str) -> bool:
         if not base.startswith("https://") or not key:
             return False
         sync_and_merge_pending(user, base, key, timeout=20)
+        try:
+            push_highnes_ledger(base, key, timeout=20)
+        except Exception:
+            return False
         return True
     except Exception:
         return False

@@ -80,30 +80,84 @@ def row_value(row: list[str], mapping: dict[str, int], key: str) -> str | None:
     return clean_cell(row[idx])
 
 
+def is_summary_row(row: list[str]) -> bool:
+    text = " ".join(clean_cell(cell).lower() for cell in row if cell)
+    summary_keywords = [
+        "statement summary",
+        "brought forward",
+        "dr count",
+        "cr count",
+        "total debits",
+        "total credits",
+        "closing balance",
+    ]
+    return any(kw in text for kw in summary_keywords)
+
+
 def parse_table_rows(tables: list[list[list[object]]]) -> list[dict]:
     transactions: list[dict] = []
     active_map: dict[str, int] | None = None
     for table in tables:
+        # If the table has summary rows and no transaction date rows, skip the whole table
+        if any(is_summary_row([clean_cell(c) for c in raw_row]) for raw_row in table):
+            has_txns = any(len(r) >= 6 and parse_date(clean_cell(r[0])) for r in table)
+            if not has_txns:
+                continue
+
         for raw_row in table:
             row = [clean_cell(cell) for cell in raw_row]
             if not any(row):
                 continue
+            if is_summary_row(row):
+                continue
+
             maybe_map = header_map(row)
             if {"txn_date", "description"}.issubset(maybe_map):
                 active_map = maybe_map
                 continue
-            if not active_map:
+
+            # Repeated header rows (e.g. page headers with only 'Balance') without dates
+            if maybe_map and not parse_date(row[0]):
                 continue
+
+            if not active_map:
+                # Auto-detect 7-column or 6-column layout when row begins with valid dates:
+                # [txn_date, value_date, description, ref, debit, credit, balance]
+                if len(row) >= 7 and parse_date(row[0]) and parse_date(row[1]):
+                    active_map = {
+                        "txn_date": 0,
+                        "value_date": 1,
+                        "description": 2,
+                        "reference": 3,
+                        "debit": 4,
+                        "credit": 5,
+                        "balance": 6,
+                    }
+                elif len(row) >= 6 and parse_date(row[0]):
+                    active_map = {
+                        "txn_date": 0,
+                        "value_date": 1,
+                        "description": 2,
+                        "debit": 3,
+                        "credit": 4,
+                        "balance": 5,
+                    }
+                else:
+                    continue
 
             txn_date = parse_date(row_value(row, active_map, "txn_date"))
             if not txn_date:
-                if transactions:
+                # Only treat as continuation if it's not a header-like row
+                if transactions and not maybe_map:
                     continuation = " ".join(cell for cell in row if cell)
                     transactions[-1]["description"] = f"{transactions[-1]['description']} {continuation}".strip()
                     transactions[-1]["raw_text"] = f"{transactions[-1]['raw_text']} {continuation}".strip()
                 continue
 
-            description = row_value(row, active_map, "description") or ""
+            description = row_value(row, active_map, "description") or row_value(row, active_map, "reference") or ""
+            ref_val = row_value(row, active_map, "reference")
+            if ref_val == "-":
+                ref_val = None
             debit = parse_money(row_value(row, active_map, "debit"))
             credit = parse_money(row_value(row, active_map, "credit"))
             balance_raw = row_value(row, active_map, "balance")
@@ -112,14 +166,27 @@ def parse_table_rows(tables: list[list[list[object]]]) -> list[dict]:
                     "txn_date": txn_date,
                     "value_date": parse_date(row_value(row, active_map, "value_date")) or txn_date,
                     "description": description,
-                    "reference": row_value(row, active_map, "reference"),
+                    "reference": ref_val,
                     "debit": debit,
                     "credit": credit,
                     "balance": parse_money(balance_raw) if balance_raw else None,
                     "raw_text": " | ".join(cell for cell in row if cell),
                 }
             )
-    return [row for row in transactions if row["description"] and (row["debit"] or row["credit"])]
+    return [row for row in transactions if (row["debit"] or row["credit"])]
+
+
+def is_likely_amount_token(val: str) -> bool:
+    clean = val.replace("-", "").replace("+", "").strip()
+    if not clean:
+        return False
+    if "." in clean:
+        parts = clean.replace(",", "").split(".")
+        return len(parts) == 2 and len(parts[1]) in (1, 2) and len(parts[0]) <= 9
+    if "," in clean:
+        raw_digits = clean.replace(",", "")
+        return raw_digits.isdigit() and len(raw_digits) <= 8
+    return False
 
 
 def parse_text_lines(text: str) -> list[dict]:
@@ -132,8 +199,8 @@ def parse_text_lines(text: str) -> list[dict]:
             current = [line.strip()]
         elif current:
             current.append(line.strip())
-    if current:
-        blocks.append(" ".join(current))
+        if current:
+            blocks.append(" ".join(current))
 
     rows: list[dict] = []
     for block in blocks:
@@ -143,7 +210,8 @@ def parse_text_lines(text: str) -> list[dict]:
         txn_date = parse_date(date_match.group(1))
         if not txn_date:
             continue
-        amounts = MONEY_RE.findall(block)
+        raw_amounts = MONEY_RE.findall(block)
+        amounts = [item for item in raw_amounts if is_likely_amount_token(item)]
         if not amounts:
             continue
         parsed_amounts = [parse_money(item) for item in amounts]
@@ -159,13 +227,11 @@ def parse_text_lines(text: str) -> list[dict]:
         for amount in amounts[-3:]:
             description = description.replace(amount, " ", 1)
         description = re.sub(r"\s+", " ", description).strip(" -|")
-        if not description:
-            continue
         rows.append(
             {
                 "txn_date": txn_date,
                 "value_date": txn_date,
-                "description": description,
+                "description": description or "",
                 "reference": None,
                 "debit": debit,
                 "credit": credit,
@@ -181,15 +247,19 @@ def extract_transactions(pdf_path: Path, password: str | None = None) -> list[di
         tables: list[list[list[object]]] = []
         text_parts: list[str] = []
         for page in pdf.pages:
-            page_tables = page.extract_tables(
-                {
-                    "vertical_strategy": "lines",
-                    "horizontal_strategy": "text",
-                    "intersection_tolerance": 5,
-                    "snap_tolerance": 3,
-                    "join_tolerance": 3,
-                }
-            )
+            # 1. First try extracting tables using line strategies (matches SBI bordered tables)
+            page_tables = page.extract_tables()
+            # If no tables found, try custom strategy
+            if not page_tables:
+                page_tables = page.extract_tables(
+                    {
+                        "vertical_strategy": "lines",
+                        "horizontal_strategy": "text",
+                        "intersection_tolerance": 5,
+                        "snap_tolerance": 3,
+                        "join_tolerance": 3,
+                    }
+                )
             tables.extend(page_tables or [])
             text_parts.append(page.extract_text(x_tolerance=1, y_tolerance=3) or "")
 

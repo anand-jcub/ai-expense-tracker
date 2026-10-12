@@ -21,25 +21,31 @@ TRANSACTION DIRECTIONS (CRITICAL):
 - NEVER describe debits as money received or credits as money sent.
 
 TOOL USAGE:
-1. Use list_pending_reviews when user asks "what needs review", "review statement", "review transactions", "review uncategorized", or asks to review for a specific date range/period.
+1. Use categorize_transactions when the user instructs you to categorize, classify, or recategorize transactions:
+   - "classify Kerala S as Food" -> query='Kerala S', category='Food'
+   - "categorize Allen So as Shopping and Max Retail as Shopping" -> items with query and category
+   - "make transaction #1146 Food" -> transaction_id=1146, category='Food'
+   - This writes directly to the database and immediately updates the dashboard.
+2. Use confirm_pending_action when the user replies "yes", "confirm", "apply", "looks good", or "done" to a confirmation card:
+   - This confirms and saves the pending changes directly to the database.
+3. Use list_pending_reviews when user asks "what needs review", "review statement", "review transactions", "review uncategorized", or asks to review for a specific date range/period.
    - Pass start_date and end_date if specified (e.g. "Review pending transactions from 2026-08-01 to 2026-08-31").
-   - For pending items, call propose_categorize_transaction with the suggested or requested category to generate interactive confirmation cards for the user.
-2. Use propose_edit_classification when user wants to change, fix, or recategorize an existing or auto-classified transaction:
-   - "change yesterday's Swiggy to Dining out" -> query='Swiggy', new_category='Dining out'
-   - "make the Shell on Aug 19 Shared with Highnes" -> query='Shell', date='2026-08-19', new_expense_type='Shared', shared_with='Highnes'
-   - "remember this for Uber" -> learn=True
-3. Use find_person_transactions for ANY transfer/payment questions involving a person/contact:
+   - If user explicitly tells you what to classify them as, use categorize_transactions directly.
+   - If suggesting categories for unclassified items when user only asked "what needs review", propose with propose_categorize_transaction.
+4. Use propose_add_manual for manual expense/credit creation:
+   - propose_add_manual only proposes — user must confirm. Never invent numbers.
+5. NEVER claim a transaction is categorized or saved if you only called a propose tool. Only state it is done after categorize_transactions or confirm_pending_action has run.
+6. Use find_person_transactions for ANY transfer/payment questions involving a person/contact:
    - "how much did Highnes send me" -> direction='received'
    - "when did I send/pay Highnes 50k" -> direction='sent', exact_amount=50000
    - "transfers with Highnes on July" -> direction='both', start_date='2026-07-01', end_date='2026-07-31'
-4. Use ask_books or search_transactions for category spending, merchant searches, auto-debits, loans, EMIs:
+7. Use ask_books or search_transactions for category spending, merchant searches, auto-debits, loans, EMIs:
    - "loans I paid in July" -> text='loan', start_date='2026-07-01', end_date='2026-07-31'
    - "auto debits in July" -> text='auto', start_date='2026-07-01', end_date='2026-07-31'
    - "debits by clix and branch" -> text='clix' or 'branch'
    - "business transactions" or "business category" -> search specifically for category='Business' or text='Business' with exclude_business=False.
-5. Use get_balance_for_person for a single net khata balance (who owes whom).
-6. propose_add_manual, propose_categorize_transaction, and propose_edit_classification only propose — user must confirm. Never invent numbers.
-7. Use Recent conversation for follow-ups. After tools, reply in 1-3 short, accurate sentences or bullet points."""
+8. Use get_balance_for_person for a single net khata balance (who owes whom).
+9. Use Recent conversation for follow-ups. After tools, reply in 1-3 short, accurate sentences or bullet points."""
 
 
 
@@ -189,6 +195,10 @@ def _gemini_round(conn, username: str, message: str, history: list[dict[str, Any
             if not isinstance(args, dict):
                 args = {}
             tool_out = run_tool(conn, username, name, args)
+            if name in {"categorize_transactions", "confirm_pending_action"} and tool_out.get("ok"):
+                from expense_tracker.cloud_sync import trigger_cloud_sync_bg
+
+                trigger_cloud_sync_bg(username)
             if tool_out.get("needs_confirm"):
                 cards.append(
                     {

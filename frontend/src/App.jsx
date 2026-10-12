@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import { fetchHealth } from './api/client'
 import { isSnapshotHost } from './api/mode'
+import {
+  isPushSupported,
+  getPushSubscription,
+  subscribeUserToPush,
+  unsubscribeUserFromPush,
+  sendTestNotification,
+} from './api/push'
 import { getFeature, navFeatures } from './features/registry'
 import './App.css'
 
@@ -11,6 +18,9 @@ export default function App() {
   const [writes, setWrites] = useState(null)
   const [syncedAt, setSyncedAt] = useState(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [pushSubscribed, setPushSubscribed] = useState(false)
+  const [pushLoading, setPushLoading] = useState(false)
+  const [pushMsg, setPushMsg] = useState('')
   const [askMessages, setAskMessages] = useState(() => {
     try {
       const saved = sessionStorage.getItem('expense_ask_chat')
@@ -48,6 +58,57 @@ export default function App() {
   const feature = getFeature(tab)
   const Screen = feature.Screen
   const hub = isSnapshotHost()
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('review') === '1' || params.get('screen') === 'ask') {
+        handleAskReview()
+        params.delete('review')
+        params.delete('screen')
+        const q = params.toString() ? `?${params.toString()}` : ''
+        window.history.replaceState({}, '', `${window.location.pathname}${q}${window.location.hash}`)
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    if (isPushSupported()) {
+      getPushSubscription().then((sub) => setPushSubscribed(Boolean(sub)))
+    }
+  }, [])
+
+  const handleTogglePush = async () => {
+    setPushLoading(true)
+    setPushMsg('')
+    try {
+      if (pushSubscribed) {
+        await unsubscribeUserFromPush()
+        setPushSubscribed(false)
+        setPushMsg('Disabled')
+      } else {
+        await subscribeUserToPush()
+        setPushSubscribed(true)
+        setPushMsg('Enabled')
+      }
+    } catch (err) {
+      setPushMsg(err.message || 'Error')
+    } finally {
+      setPushLoading(false)
+    }
+  }
+
+  const handleTestPush = async () => {
+    setPushLoading(true)
+    try {
+      await sendTestNotification()
+      setPushMsg('Sent!')
+    } catch (err) {
+      setPushMsg(err.message || 'Failed')
+    } finally {
+      setPushLoading(false)
+    }
+  }
 
   useEffect(() => {
     const vv = window.visualViewport
@@ -119,6 +180,29 @@ export default function App() {
 
       {menu ? (
         <div className="overflow-menu">
+          {isPushSupported() ? (
+            <div className="menu-push-section">
+              <button
+                type="button"
+                className="btn ghost menu-push-btn"
+                disabled={pushLoading}
+                onClick={handleTogglePush}
+              >
+                {pushSubscribed ? '🔔 Alerts: On' : '🔔 Enable Alerts'}
+              </button>
+              {pushSubscribed ? (
+                <button
+                  type="button"
+                  className="btn ghost menu-push-test-btn"
+                  disabled={pushLoading}
+                  onClick={handleTestPush}
+                >
+                  Test alert
+                </button>
+              ) : null}
+              {pushMsg ? <span className="menu-push-msg">{pushMsg}</span> : null}
+            </div>
+          ) : null}
           {hub ? (
             <>
               <span className="muted">

@@ -280,6 +280,118 @@ class ConfirmWriteTests(unittest.TestCase):
         check.close()
         self.assertEqual(row["category"], "Shopping")
 
+    def test_direct_categorize_transactions(self) -> None:
+        conn = sqlite3.connect(self.tmp)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("insert into imports (source_filename, file_sha256, imported_at) values ('test4.pdf', 'hash4', '2026-09-30')")
+        imp_id = cur.lastrowid
+        cur.execute(
+            """
+            insert into transactions (import_id, source_hash, raw_text, txn_date, description, merchant_key, merchant_display, amount_signed, debit, credit, created_at)
+            values (?, 'h4', 'raw4', '2026-09-30', 'KERALA STORE', 'kerala store', 'Kerala S', -400.0, 400.0, 0.0, '2026-09-30T10:00:00Z')
+            """,
+            (imp_id,),
+        )
+        tid1 = cur.lastrowid
+        cur.execute(
+            """
+            insert into classifications (transaction_id, category, expense_type, split_ratio, my_share, status, confidence, updated_at)
+            values (?, null, 'Personal', 1.0, 400.0, 'needs_review', 0.2, '2026-09-30T10:00:00Z')
+            """,
+            (tid1,),
+        )
+        cur.execute(
+            """
+            insert into transactions (import_id, source_hash, raw_text, txn_date, description, merchant_key, merchant_display, amount_signed, debit, credit, created_at)
+            values (?, 'h5', 'raw5', '2026-09-27', 'ALLEN SOLLY', 'allen solly', 'Allen So', -2625.0, 2625.0, 0.0, '2026-09-27T10:00:00Z')
+            """,
+            (imp_id,),
+        )
+        tid2 = cur.lastrowid
+        cur.execute(
+            """
+            insert into classifications (transaction_id, category, expense_type, split_ratio, my_share, status, confidence, updated_at)
+            values (?, null, 'Personal', 1.0, 2625.0, 'needs_review', 0.2, '2026-09-27T10:00:00Z')
+            """,
+            (tid2,),
+        )
+        conn.commit()
+
+        # Batch categorization
+        res = run_tool(
+            conn,
+            "anand",
+            "categorize_transactions",
+            {
+                "items": [
+                    {"query": "Kerala S", "category": "Food"},
+                    {"transaction_id": tid2, "category": "Shopping"},
+                ]
+            },
+        )
+        conn.close()
+
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("count"), 2)
+
+        check = sqlite3.connect(self.tmp)
+        check.row_factory = sqlite3.Row
+        row1 = check.execute("select * from classifications where transaction_id = ?", (tid1,)).fetchone()
+        row2 = check.execute("select * from classifications where transaction_id = ?", (tid2,)).fetchone()
+        check.close()
+
+        self.assertEqual(row1["category"], "Food")
+        self.assertEqual(row1["status"], "reviewed")
+        self.assertEqual(row2["category"], "Shopping")
+        self.assertEqual(row2["status"], "reviewed")
+
+    def test_confirm_via_chat_tool(self) -> None:
+        conn = sqlite3.connect(self.tmp)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("insert into imports (source_filename, file_sha256, imported_at) values ('test5.pdf', 'hash5', '2026-09-28')")
+        imp_id = cur.lastrowid
+        cur.execute(
+            """
+            insert into transactions (import_id, source_hash, raw_text, txn_date, description, merchant_key, merchant_display, amount_signed, debit, credit, created_at)
+            values (?, 'h6', 'raw6', '2026-09-28', 'VINAYAKA SWEETS', 'vinayaka', 'Vinayaka', -14.0, 14.0, 0.0, '2026-09-28T10:00:00Z')
+            """,
+            (imp_id,),
+        )
+        tid = cur.lastrowid
+        cur.execute(
+            """
+            insert into classifications (transaction_id, category, expense_type, split_ratio, my_share, status, confidence, updated_at)
+            values (?, null, 'Personal', 1.0, 14.0, 'needs_review', 0.2, '2026-09-28T10:00:00Z')
+            """,
+            (tid,),
+        )
+        conn.commit()
+
+        # Propose
+        prop = run_tool(
+            conn,
+            "anand",
+            "propose_categorize_transaction",
+            {"transaction_id": tid, "category": "Food"},
+        )
+        self.assertTrue(prop.get("needs_confirm"))
+
+        # Confirm via chat tool
+        chat_confirm = run_tool(conn, "anand", "confirm_pending_action", {})
+        conn.close()
+
+        self.assertTrue(chat_confirm.get("ok"))
+        self.assertEqual(chat_confirm.get("success_count"), 1)
+
+        check = sqlite3.connect(self.tmp)
+        check.row_factory = sqlite3.Row
+        row = check.execute("select * from classifications where transaction_id = ?", (tid,)).fetchone()
+        check.close()
+        self.assertEqual(row["category"], "Food")
+        self.assertEqual(row["status"], "reviewed")
+
 
 class LocalIntentTests(unittest.TestCase):
     def setUp(self) -> None:

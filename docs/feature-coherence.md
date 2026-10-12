@@ -44,7 +44,7 @@ Update this file when you intentionally add a new multi-surface feature.
 |---------|----------|-------------------|
 | Attention strip counts (if period-scoped) | Home top | Either uses period **or** is explicitly labeled “all time” |
 | Unified transactions when opened from Home period context | Transactions tab | Prefer same period when user arrives via dashboard Apply; if not, document as global |
-| Review badge on nav | Sidebar | All-time is OK if badge is “needs review” not “period review” |
+| Review badge on nav | Sidebar | All-time **debit** needs-review only (credits are not a review task) |
 
 ### May ignore (global by design)
 

@@ -42,5 +42,8 @@ watchdog.pid
 watchdog.lock
 tunnel.pid
 tunnel.url
+tunnel-registered.url
 tunnel.lock
+.wrangler/
+cloud-mcp/.wrangler/
 

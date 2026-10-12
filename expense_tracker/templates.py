@@ -7,6 +7,7 @@ import urllib.parse
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
+from .classifier import upi_paying_app
 from .services import (
     CATEGORIES,
     EXPENSE_TYPES,
@@ -20,8 +21,10 @@ from .services import (
     expenses_by_category,
     dashboard_totals,
     filter_dashboard_rows,
+    get_month_nav,
     filter_editable_rows,
     filter_review_rows,
+    is_review_debit,
     filter_transactions_by_text,
     monthly_trends_dict,
     people_from_split_ratio,
@@ -145,18 +148,41 @@ def render_dashboard_filters(
     exclude_business: bool,
     use_my_share: bool = False,
 ) -> str:
+    _months, prev_m, next_m = get_month_nav(
+        min_date, max_date, start_date, end_date, exclude_business
+    )
+    try:
+        title = date.fromisoformat(str(start_date)[:10]).strftime("%b %Y")
+    except Exception:
+        title = active_period_label(start_date, end_date)
+    prev_html = (
+        f'<a class="month-nav-btn" href="{esc(prev_m["url"])}" aria-label="Previous month">{esc(prev_m["label"])}</a>'
+        if prev_m
+        else '<span class="month-nav-btn disabled" aria-hidden="true">Prev</span>'
+    )
+    next_html = (
+        f'<a class="month-nav-btn" href="{esc(next_m["url"])}" aria-label="Next month">{esc(next_m["label"])}</a>'
+        if next_m
+        else '<span class="month-nav-btn disabled" aria-hidden="true">Next</span>'
+    )
     return f"""
     <section class="dashboard-controls">
-      <div class="section-head">
-        <h2>Dashboard period</h2>
+      <div class="month-switch">
+        {prev_html}
+        <strong class="month-switch-title">{esc(title)}</strong>
+        {next_html}
       </div>
-      <form method="get" action="/" class="period-form">
-        <label>Start date <input type="date" name="start_date" value="{esc(start_date)}" min="{esc(min_date)}" max="{esc(max_date)}"></label>
-        <label>End date <input type="date" name="end_date" value="{esc(end_date)}" min="{esc(min_date)}" max="{esc(max_date)}"></label>
-        <label class="check"><input type="checkbox" name="exclude_business" value="1" {"checked" if exclude_business else ""}> Exclude business</label>
-        <button type="submit">Apply</button>
-        <a class="button subtle" href="/">Reset</a>
-      </form>
+      <details class="import-more">
+        <summary>Custom range</summary>
+        <form method="get" action="/" class="period-form">
+          <label>Start date <input type="date" name="start_date" value="{esc(start_date)}" min="{esc(min_date)}" max="{esc(max_date)}"></label>
+          <label>End date <input type="date" name="end_date" value="{esc(end_date)}" min="{esc(min_date)}" max="{esc(max_date)}"></label>
+          <input type="hidden" name="exclude_business" value="0">
+          <label class="check"><input type="checkbox" name="exclude_business" value="1" {"checked" if exclude_business else ""}> Exclude business</label>
+          <button type="submit">Apply</button>
+          <a class="button subtle" href="/">This month</a>
+        </form>
+      </details>
     </section>
     """
 
@@ -239,16 +265,19 @@ def render_manual_transaction_form() -> str:
           <option value="debit">Debit</option>
           <option value="credit">Credit</option>
         </select></label>
-        <label>Amount <input type="number" name="amount" min="0.01" step="0.01" required></label>
+        <label>Amount <input type="number" name="amount" id="manual-amount" min="0.01" step="0.01" required oninput="handleManualAmountChange(this)"></label>
         <label>Description <input name="description" required placeholder="Merchant or payee"></label>
         <label>Category <select name="category" required>
           <option value="">Choose</option>
           {option_tags(CATEGORIES, None)}
         </select></label>
-        <label>Type <select name="expense_type">
+        <label>Type <select name="expense_type" id="manual-expense-type" onchange="toggleManualTypeFields(this)">
           {option_tags(EXPENSE_TYPES, "Personal")}
         </select></label>
-        <label>People <input name="split_people" type="number" min="1" step="1" value="1" title="Number of people sharing this expense"></label>
+        <label class="manual-shared-field" style="display:none;"><span>Split (1/N)</span> <input name="split_people" id="manual-split-people" type="number" min="1" step="1" value="2" title="Equal split count" oninput="handleManualPeopleChange(this)"></label>
+        <label class="manual-shared-field" style="display:none;"><span>My share</span> <input name="my_share" id="manual-my-share" type="number" step="0.01" min="0" placeholder="₹" title="Your personal portion" oninput="handleManualMyShareChange(this)"></label>
+        <label class="manual-shared-field" style="display:none;"><span>Other</span> <input name="other_share" id="manual-other-share" type="number" step="0.01" min="0" placeholder="₹" title="Partner / others share" oninput="handleManualOtherShareChange(this)"></label>
+        <label class="manual-shared-field" style="display:none;"><span>Shared with</span> <input name="shared_with" list="contact-partner-list" placeholder="Contact or username"></label>
         <label>Notes <input name="notes" placeholder="Optional"></label>
         <label class="check"><input type="checkbox" name="learn"> Learn</label>
         <button type="submit">Add transaction</button>
@@ -1088,6 +1117,13 @@ def render_credit_debit_graph(rows, query: str) -> str:
     """
 
 
+def upi_chip(description: str) -> str:
+    app = upi_paying_app(description or "")
+    if not app:
+        return ""
+    return f'<span class="upi-chip" title="UPI app named on this payment">{esc(app)}</span>'
+
+
 def category_badge(category: str) -> str:
     cat_lower = str(category or "").lower()
     style_class = "uncategorized"
@@ -1292,12 +1328,30 @@ def render_review_rows(rows) -> str:
         et = row_get(row, "expense_type") or "Personal"
         status = row_get(row, "status") or "needs_review"
         shared_show = "display:none" if et != "Shared" else ""
+        split_off = "" if et == "Shared" else " disabled"
+        total_amt = abs(Decimal(str(row["amount_signed"] or "0")))
+        init_my = row_get(row, "my_share")
+        if et == "Shared" and init_my is not None:
+            my_dec = abs(Decimal(str(init_my)))
+            other_dec = max(Decimal("0"), total_amt - my_dec)
+            my_val = f"{my_dec:.2f}"
+            other_val = f"{other_dec:.2f}"
+        elif et == "Shared":
+            my_dec = (total_amt / Decimal("2")).quantize(Decimal("0.01"))
+            other_dec = max(Decimal("0"), total_amt - my_dec)
+            my_val = f"{my_dec:.2f}"
+            other_val = f"{other_dec:.2f}"
+        else:
+            my_val = ""
+            other_val = ""
+        people_val = review_people_value(row)
         output.append(
             f"""
             <tr class="tx-row" data-status="{esc(status)}" data-expense-type="{esc(et)}" data-filter-bucket="needs_review">
               <td>{esc(row['txn_date'])}</td>
               <td>
                 <strong>{esc(row['merchant_display'])}</strong>
+                {upi_chip(row['description'])}
                 <span>{esc(row['description'])}</span>
                 <span class="badge warn" style="margin-top:4px; display:inline-block;">needs review</span>
               </td>
@@ -1313,8 +1367,10 @@ def render_review_rows(rows) -> str:
                     <option value="">Choose</option>
                     {option_tags(CATEGORIES, row_get(row, 'category'))}
                   </select></label>
-                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>People</span><input name="split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
-                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>Shared with</span><input name="shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" title="Partner for shared expenses" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>People</span><input name="split_people_{row_id}" type="number" min="1" step="1" value="{people_val}" data-total="{total_amt:.2f}" data-row="{row_id}" oninput="handlePeopleSplitChange(this)" placeholder="2" style="width:65px;" title="Equal split count"{split_off}></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>My share</span><input name="my_share_{row_id}" type="number" step="0.01" min="0" value="{my_val}" data-total="{total_amt:.2f}" data-row="{row_id}" oninput="handleMyShareChange(this)" placeholder="₹" style="width:90px;" title="Your personal portion"{split_off}></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>Other</span><input name="other_share_{row_id}" type="number" step="0.01" min="0" value="{other_val}" data-total="{total_amt:.2f}" data-row="{row_id}" oninput="handleOtherShareChange(this)" placeholder="₹" style="width:90px;" title="Partner / others share"{split_off}></label>
+                  <label class="review-field shared-only-field" data-row="{row_id}" style="{shared_show}"><span>Shared with</span><input name="shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" title="Partner for shared expenses" value="{esc(row_get(row, 'shared_with', '') or '')}"{split_off}></label>
                   <label class="review-field"><span>Notes</span><input name="notes_{row_id}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="learn_{row_id}"> Learn</label>
                 </div>
@@ -1334,15 +1390,33 @@ def render_edit_rows(rows) -> str:
         et = row["expense_type"] or "Personal"
         badge = "ok" if row["status"] != "needs_review" else "warn"
         shared_show = "display:none" if et != "Shared" else ""
+        split_off = "" if et == "Shared" else " disabled"
         bucket = "needs_review" if row["status"] == "needs_review" else (
             "shared" if et == "Shared" else ("loan" if et == "Loan" else "classified")
         )
+        total_amt = abs(Decimal(str(row["amount_signed"] or "0")))
+        init_my = row_get(row, "my_share")
+        if et == "Shared" and init_my is not None:
+            my_dec = abs(Decimal(str(init_my)))
+            other_dec = max(Decimal("0"), total_amt - my_dec)
+            my_val = f"{my_dec:.2f}"
+            other_val = f"{other_dec:.2f}"
+        elif et == "Shared":
+            my_dec = (total_amt / Decimal("2")).quantize(Decimal("0.01"))
+            other_dec = max(Decimal("0"), total_amt - my_dec)
+            my_val = f"{my_dec:.2f}"
+            other_val = f"{other_dec:.2f}"
+        else:
+            my_val = ""
+            other_val = ""
+        people_val = review_people_value(row)
         output.append(
             f"""
             <tr class="tx-row" data-status="{esc(row['status'])}" data-expense-type="{esc(et)}" data-filter-bucket="{bucket}">
               <td>{esc(row['txn_date'])}</td>
               <td>
                 <strong>{esc(row['merchant_display'])}</strong>
+                {upi_chip(row['description'])}
                 <span>{esc(row['description'])}</span>
               </td>
               <td>{bank_amount_html(row)}</td>
@@ -1358,8 +1432,10 @@ def render_edit_rows(rows) -> str:
                     <option value="">Choose</option>
                     {option_tags(CATEGORIES, row['category'])}
                   </select></label>
-                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>People</span><input name="edit_split_people_{row_id}" type="number" min="1" step="1" value="{review_people_value(row)}" title="Number of people sharing this expense"></label>
-                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>Shared with</span><input name="edit_shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" value="{esc(row_get(row, 'shared_with', '') or '')}"></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>People</span><input name="edit_split_people_{row_id}" type="number" min="1" step="1" value="{people_val}" data-total="{total_amt:.2f}" data-row="edit_{row_id}" oninput="handlePeopleSplitChange(this)" placeholder="2" style="width:65px;" title="Equal split count"{split_off}></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>My share</span><input name="edit_my_share_{row_id}" type="number" step="0.01" min="0" value="{my_val}" data-total="{total_amt:.2f}" data-row="edit_{row_id}" oninput="handleMyShareChange(this)" placeholder="₹" style="width:90px;" title="Your personal portion"{split_off}></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>Other</span><input name="edit_other_share_{row_id}" type="number" step="0.01" min="0" value="{other_val}" data-total="{total_amt:.2f}" data-row="edit_{row_id}" oninput="handleOtherShareChange(this)" placeholder="₹" style="width:90px;" title="Partner / others share"{split_off}></label>
+                  <label class="review-field shared-only-field" data-row="edit_{row_id}" style="{shared_show}"><span>Shared with</span><input name="edit_shared_with_{row_id}" list="contact-partner-list" placeholder="Contact or username" value="{esc(row_get(row, 'shared_with', '') or '')}"{split_off}></label>
                   <label class="review-field"><span>Notes</span><input name="edit_notes_{row_id}" value="{esc(row_get(row, 'notes', '') or '')}" placeholder="Optional"></label>
                   <label class="check"><input type="checkbox" name="edit_learn_{row_id}"> Learn</label>
                 </div>
@@ -1436,8 +1512,8 @@ def render_unified_transactions_section(
     if exclude_credits:
         rows = [r for r in rows if float(r["credit"] or 0) <= 0]
 
-    unfiltered_pending = [r for r in rows if (r["status"] or "") == "needs_review"]
-    unfiltered_classified = [r for r in rows if (r["status"] or "") != "needs_review"]
+    unfiltered_pending = [r for r in rows if is_review_debit(r)]
+    unfiltered_classified = [r for r in rows if not is_review_debit(r)]
 
     total_pending = len(unfiltered_pending)
     total_classified = len(unfiltered_classified)
@@ -1588,8 +1664,8 @@ def render_unified_transactions_section(
         """
     elif tx_filter == "last_statement":
         ls = rows
-        ls_pending = [r for r in ls if (r["status"] or "") == "needs_review"]
-        ls_auto = [r for r in ls if (r["status"] or "") != "needs_review"]
+        ls_pending = [r for r in ls if is_review_debit(r)]
+        ls_auto = [r for r in ls if not is_review_debit(r)]
         raw_ls_count = len(ls)
         if query:
             ls_pending = filter_review_rows(ls_pending, query)
@@ -1910,6 +1986,110 @@ def render_onboarding_checklist(onboarding: dict | None) -> str:
     """
 
 
+_LOAN_STATUS = {
+    "Unpaid (Added to Balance)": "Not repaid",
+    "Reimbursed": "Repaid",
+    "Covered in baseline": "In the opening balance",
+    "No statement debit yet": "Not on the statement yet",
+}
+
+
+def _highnes_line_label(entry: dict) -> str:
+    kind = str(entry.get("entry_type") or "")
+    name = (entry.get("loan_name") or "").strip()
+    if kind == "opening_balance":
+        return "Opening balance"
+    if kind == "loan_debit":
+        return f"You paid {name}" if name else "You paid a loan"
+    if kind in {"transfer_repaid", "reimbursement"}:
+        return "He paid you"
+    if kind == "money_lent":
+        return "You sent him money"
+    return kind.replace("_", " ") or "Entry"
+
+
+def _highnes_reminder_html(summary: dict) -> str:
+    from .highnes_ledger import highnes_reminders
+
+    notes = highnes_reminders(summary)
+    if not notes:
+        return ""
+    items = "".join(f"<li>{esc(note)}</li>" for note in notes)
+    return f'<ul class="hn-reminders">{items}</ul>'
+
+
+def render_highnes_ledger(summary: dict | None, share_path: str | None = None, for_highnes: bool = False) -> str:
+    """Highnes loan ledger. One figure, three loans, then the lines."""
+    if not summary:
+        return '<p class="empty">Highnes ledger is not available yet.</p>'
+    owed = float(summary.get("total_balance_owed") or 0)
+    who = "You owe Anand" if for_highnes else "Highnes owes you"
+    share_html = ""
+    if share_path and not for_highnes:
+        share_html = (
+            '<details class="import-more">'
+            "<summary>Share with Highnes</summary>"
+            f'<p class="empty"><a href="{esc(share_path)}">{esc(share_path)}</a></p>'
+            "</details>"
+        )
+    loans = []
+    for loan in summary.get("active_loans") or []:
+        raw_status = loan.get("status") or ""
+        status = _LOAN_STATUS.get(raw_status, raw_status)
+        when = esc(str(loan.get("last_date") or ""))
+        loans.append(
+            '<article class="hn-loan">'
+            f"<strong>{esc(loan.get('name') or '')}</strong>"
+            f"<span>{money(loan.get('monthly_emi') or 0)}</span>"
+            f'<span class="muted-line">{esc(status)}{(" · " + when) if when else ""}</span>'
+            "</article>"
+        )
+    lines = []
+    for e in summary.get("entries") or []:
+        amt = float(e.get("amount") or 0)
+        sign = "down" if amt < 0 else "up"
+        lines.append(
+            '<li class="hn-line">'
+            f"<span>{esc(e.get('entry_date') or '')}</span>"
+            f"<span>{esc(_highnes_line_label(e))}</span>"
+            f'<span class="hn-amt {sign}">{money(amt)}</span>'
+            f"<span>{money(e.get('running_balance') or 0)}</span>"
+            "</li>"
+        )
+    return f"""
+    <section class="highnes-ledger">
+      <p class="hn-kicker">{esc(who)}</p>
+      <p class="hn-figure">{money(owed)}</p>
+      <p class="empty">Opening {money(summary.get('opening_balance') or 0)} on {esc(summary.get('opening_date') or '')}.</p>
+      {_highnes_reminder_html(summary)}
+      {share_html}
+      <div class="hn-loans">{''.join(loans)}</div>
+      <ol class="hn-lines">{''.join(lines) or '<li class="empty">No lines yet.</li>'}</ol>
+    </section>
+    """
+
+
+def highnes_share_page(summary: dict | None) -> bytes:
+    """Read-only page for Highnes. No other expenses."""
+    body = render_highnes_ledger(summary, for_highnes=True)
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Highnes ledger</title>
+  <link rel="stylesheet" href="/style.css?v=25">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+  <main class="main-content" style="max-width:720px;margin:24px auto;padding:0 16px;">
+    {body}
+    <p class="empty">Read only. Reminders for these dates go to your phone, not Anand’s.</p>
+  </main>
+</body>
+</html>"""
+    return html.encode("utf-8")
+
+
 def render_home_nl_box() -> str:
     """P3: natural-language settlement question on Home (client → API)."""
     return """
@@ -1947,7 +2127,7 @@ def render_mobile_bottom_nav(pending_badge_count: int = 0) -> str:
         <span class="mnav-label">Txns</span>{badge}
       </a>
       <a href="#contacts" class="mnav-item" data-tab-jump="contacts" data-tab="contacts">
-        <span class="mnav-label">People</span>
+        <span class="mnav-label">Highnes</span>
       </a>
       <a href="/app/" class="mnav-item mnav-app">
         <span class="mnav-label">App</span>
@@ -1960,6 +2140,8 @@ def render_home_attention_strip(
     review_count: int,
     passthrough_count: int,
     open_shared_null_partner: int = 0,
+    start_date: str = "",
+    end_date: str = "",
 ) -> str:
     """P0: needs-attention strip on Home dashboard."""
     chips = []
@@ -1968,15 +2150,15 @@ def render_home_attention_strip(
             f'<a class="home-chip warn" href="#review" data-tab-jump="review">'
             f'<strong>{review_count}</strong> to review</a>'
         )
-    if passthrough_count > 0:
-        chips.append(
-            f'<a class="home-chip accent" href="#contacts" data-tab-jump="contacts">'
-            f'<strong>{passthrough_count}</strong> pass-through candidate'
-            f'{"s" if passthrough_count != 1 else ""}</a>'
-        )
     if open_shared_null_partner > 0:
+        shared_missing_href = "/?tx_filter=shared"
+        if start_date:
+            shared_missing_href += f"&start_date={urllib.parse.quote(start_date)}"
+        if end_date:
+            shared_missing_href += f"&end_date={urllib.parse.quote(end_date)}"
+        shared_missing_href += "#review"
         chips.append(
-            f'<a class="home-chip muted" href="/?tx_filter=shared#review" data-tab-jump="review">'
+            f'<a class="home-chip muted" href="{shared_missing_href}" data-tab-jump="review">'
             f'<strong>{open_shared_null_partner}</strong> shared missing partner</a>'
         )
     if not chips:
@@ -2048,7 +2230,7 @@ def page(
     person_search: str = "",
     start_date: str = "",
     end_date: str = "",
-    exclude_business: bool = False,
+    exclude_business: bool = True,
     use_my_share: bool = False,
     current_user: str | None = None,
     all_users: list[str] | None = None,
@@ -2077,7 +2259,8 @@ def page(
         r for r in (data.get("transactions") or [])
         if ((r["status"] if hasattr(r, "keys") and "status" in r.keys() else r.get("status")) if isinstance(r, dict) or hasattr(r, "keys") else getattr(r, "status", None)) == "needs_review"
     ]
-    attention_review_count = len(pending_items if pending_items or not data.get("pending") else data.get("pending") or [])
+    review_pool = pending_items if pending_items or not data.get("pending") else (data.get("pending") or [])
+    attention_review_count = sum(1 for r in review_pool if is_review_debit(r))
     attention_pt_count = len(data.get("passthrough_candidates") or [])
     if tx_filter == "needs_review" and not attention_review_count and data.get("transactions"):
         tx_filter = "classified"
@@ -2123,7 +2306,7 @@ def page(
     # Split review queue by debit/credit (legacy split still used for badge counts)
     debit_review = [r for r in pending_review if row_get(r, "debit") and float(row_get(r, "debit") or 0) > 0]
     credit_review = [r for r in pending_review if row_get(r, "credit") and float(row_get(r, "credit") or 0) > 0]
-    unified_pending = pending_review
+    unified_pending = [r for r in pending_review if is_review_debit(r)]
     pending_badge_count = len(unified_pending)
 
     def _row_field(row, key, default=None):
@@ -2145,7 +2328,8 @@ def page(
     )
     # Classic Home keeps attention + spend only; settlement/NL/onboarding live in React /app/
     home_attention_html = render_home_attention_strip(
-        attention_review_count, attention_pt_count, open_shared_null
+        attention_review_count, attention_pt_count, open_shared_null,
+        start_date=start_date, end_date=end_date,
     )
     mobile_nav_html = render_mobile_bottom_nav(pending_badge_count)
     # Home / money flow stay on the dashboard period
@@ -2157,12 +2341,8 @@ def page(
             r for r in data["transactions"]
             if str(r["import_id"]) == str(last_import_id)
         ]
-    # Needs review / Classified / Shared = all rows (matches dashboard 125).
-    # Last statement chip is the last WhatsApp file only.
-    if period_explicit:
-        workspace_rows = tx_source
-    else:
-        workspace_rows = list(data.get("transactions") or [])
+    # Transactions, Money Flow, and related parts strictly adhere to active period
+    workspace_rows = tx_source
     # Dashboard charts/totals use the same period + exclude_business
     period_rows = filter_dashboard_rows(data["transactions"], start_date, end_date, exclude_business)
     shared_source = [
@@ -2179,11 +2359,17 @@ def page(
         review_search=review_search,
         edit_search=edit_search,
         exclude_credits=exclude_credits,
-        start_date=start_date if period_explicit else "",
-        end_date=end_date if period_explicit else "",
+        start_date=start_date,
+        end_date=end_date,
         last_import=last_import,
         last_statement_rows=last_statement_all,
     )
+    classified_more_href = "/?tx_filter=classified"
+    if start_date:
+        classified_more_href += f"&start_date={urllib.parse.quote(start_date)}"
+    if end_date:
+        classified_more_href += f"&end_date={urllib.parse.quote(end_date)}"
+    classified_more_href += "#review"
     person_matches = sorted(
         filter_transactions_by_text(tx_source, person_search),
         key=lambda row: (row["txn_date"], row["id"]),
@@ -2244,7 +2430,7 @@ def page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Personal Expense Tracker</title>
-  <link rel="stylesheet" href="/style.css?v=22">
+  <link rel="stylesheet" href="/style.css?v=25">
   <script src="/chart.js?v=4"></script>
 </head>
 <body>
@@ -2281,7 +2467,7 @@ def page(
         </a>
         <a href="#contacts" class="tab-link" data-tab="contacts">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-          <span>People</span>
+          <span>Highnes</span>
         </a>
         <details class="nav-more">
           <summary class="nav-more-summary">
@@ -2289,7 +2475,7 @@ def page(
             <span>More</span>
           </summary>
           <div class="nav-more-items">
-            <a href="/?tx_filter=classified#review" class="tab-link" data-tab="review" data-tab-jump="review">
+            <a href="{classified_more_href}" class="tab-link" data-tab="review" data-tab-jump="review">
               <span>Classified (edit)</span>
             </a>
             <a href="#search" class="tab-link" data-tab="search">
@@ -2386,14 +2572,9 @@ def page(
         </section>
       </div>
 
-      <!-- Tab 3: People (Khata) -->
+      <!-- Tab 3: Highnes ledger (old khata removed from the UI) -->
       <div id="pane-contacts" class="tab-pane">
-        {render_contacts_section(
-            data.get('contacts', []),
-            data.get('passthrough_candidates', []),
-            partner_balances=partner_balances,
-            merge_suggestions=data.get('merge_suggestions') or merge_suggestions,
-        )}
+        {render_highnes_ledger(data.get("highnes"), share_path=data.get("highnes_share_path"))}
       </div>
 
       <!-- Tab 4: Unified Transactions (review + edit) -->
@@ -2434,7 +2615,7 @@ def page(
           </section>
           <section>
             <h2>Shared expenses</h2>
-            <p class="empty" style="margin-top:0;">Person balances live under <a href="#contacts" data-tab-jump="contacts">People</a> and Home.</p>
+            <p class="empty" style="margin-top:0;">Shared bill splits only. Highnes loans are under <a href="#contacts" data-tab-jump="contacts">Highnes</a>.</p>
             <div style="overflow-x: auto; margin-top:12px;">
               <table>
                 <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Total</th><th>Split</th><th>My share</th><th>Partner</th></tr></thead>
@@ -2448,7 +2629,7 @@ def page(
   </div>
   
   {mobile_nav_html}
-  <script src="/app.js?v=21"></script>
+  <script src="/app.js?v=22"></script>
 </body>
 </html>
 """

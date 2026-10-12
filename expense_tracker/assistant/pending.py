@@ -47,6 +47,16 @@ def peek(token: str, username: str) -> dict[str, Any] | None:
     return item
 
 
+def take_all(username: str) -> list[dict[str, Any]]:
+    """Pop all unexpired tokens belonging to username."""
+    now = time.time()
+    with _LOCK:
+        _expire_unlocked(now)
+        matching = [k for k, v in _PENDING.items() if v.get("username") == username]
+        items = [_PENDING.pop(k) for k in matching]
+    return items
+
+
 def _expire_unlocked(now: float) -> None:
     dead = [k for k, v in _PENDING.items() if float(v.get("expires") or 0) < now]
     for k in dead:

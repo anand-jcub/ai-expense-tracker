@@ -160,26 +160,12 @@ def try_local(conn, username: str, message: str) -> dict[str, Any] | None:
         }
 
     if _WHO.search(text):
-        data = run_tool(conn, username, "list_balances", {"nonzero_only": True})
-        rows = data.get("contacts") or []
-        if not rows:
-            reply = "No open person balances."
-        else:
-            bits = []
-            for r in rows[:8]:
-                net = float(r.get("net") or 0)
-                name = r.get("contact_name")
-                if net > 0:
-                    bits.append(f"{name} owes you ₹{net:,.2f}")
-                else:
-                    bits.append(f"you owe {name} ₹{abs(net):,.2f}")
-            reply = "; ".join(bits) + "."
         return {
-            "reply": reply,
+            "reply": "No open person balances. The ledger system has been decommissioned.",
             "source": "local",
             "cards": [],
             "tool_used": "list_balances",
-            "data": data,
+            "data": {"balances": []},
         }
 
     return None

@@ -66,81 +66,174 @@ def _pdf_parts_from_message(msg) -> list[tuple[str, bytes]]:
     return out
 
 
-def _is_whatsapp_deposit_statement(msg) -> bool:
-    """Only WhatsApp / Deposit Account Statement PDFs — not monthly e-CAS."""
+def _is_valid_statement_email(msg) -> bool:
+    """Accept WhatsApp Banking, YONO, and Deposit Account Statement PDFs — not monthly e-CAS."""
     subj = (msg.get("Subject") or "").lower()
     frm = (msg.get("From") or "").lower()
     if "e-account statement" in subj or "e-statement" in subj:
         return False
+    if "registered account" in subj:
+        return False
     if "cbssbi.cas" in frm or "cas@" in frm:
         return False
-    if "whatsappbanking" in frm:
+    if "whatsappbanking" in frm or "yonobysbi" in frm:
         return True
-    if "deposit account statement" in subj:
+    if "deposit account statement" in subj or "email statement" in subj:
+        return True
+    if "sbi" in frm and "statement" in subj:
         return True
     return False
 
 
-def fetch_gmail_imap(username: str, limit: int = 12) -> list[dict[str, Any]]:
-    """Pull statement PDFs from Gmail via IMAP (app password stored in the tool)."""
-    import email
+# Alias for backward compatibility
+_is_whatsapp_deposit_statement = _is_valid_statement_email
+
+
+_SENDERS = (
+    "whatsappbanking@alerts.sbi.bank.in",
+    "yonobysbi@alerts.sbi.bank.in",
+)
+
+
+def _seen_uids_path(username: str) -> Path:
+    return DATA_DIR / f".mail_seen_{username}.txt"
+
+
+def _load_seen_uids(username: str) -> set[str]:
+    path = _seen_uids_path(username)
+    if not path.is_file():
+        return set()
+    return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+
+def _save_seen_uids(username: str, uids: set[str]) -> None:
+    # Keep the set bounded so the file does not grow forever.
+    keep = sorted(uids)[-400:]
+    _seen_uids_path(username).write_text("\n".join(keep) + "\n", encoding="utf-8")
+
+
+def _uid_list(data) -> list[str]:
+    if not data or not data[0]:
+        return []
+    out = []
+    for part in data[0].split():
+        out.append(part.decode() if isinstance(part, (bytes, bytearray)) else str(part))
+    return out
+
+
+def _extract_rfc822(fetched) -> bytes | None:
+    if not fetched:
+        return None
+    for item in fetched:
+        if isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], (bytes, bytearray)):
+            return bytes(item[1])
+    return None
+
+
+def _close_imap(client) -> None:
+    try:
+        client.logout()
+    except Exception:
+        try:
+            client.shutdown()
+        except Exception:
+            pass
+
+
+def _connect_imap(addr: str, app_pw: str):
+    """Login with a few retries. DNS blips and Gmail stalls are common on this PC."""
     import imaplib
+    import time
+
+    last_err: Exception | None = None
+    for attempt in range(3):
+        client = None
+        try:
+            client = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=20)
+            client.login(addr, app_pw)
+            client.select("INBOX")
+            return client
+        except Exception as exc:
+            last_err = exc
+            if client is not None:
+                _close_imap(client)
+            time.sleep(2 * (attempt + 1))
+    raise last_err or RuntimeError("Gmail IMAP connect failed")
+
+
+def fetch_gmail_imap(username: str, limit: int = 4) -> list[dict[str, Any]]:
+    """Pull new statement PDFs. Skip messages we already handled (no re-download)."""
+    import email
 
     addr, app_pw = get_gmail_imap(username)
     if not addr or not app_pw:
         return []
 
-    query = os.environ.get(
-        "EXPENSE_GMAIL_QUERY",
-        "filename:pdf (subject:statement OR subject:e-account OR from:sbi.bank.in)",
-    )
-    results: list[dict[str, Any]] = []
     try:
-        M = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+        client = _connect_imap(addr, app_pw)
     except Exception as exc:
         return [{"ok": False, "filename": None, "error": f"Gmail IMAP connect failed: {exc}"}]
+
+    results: list[dict[str, Any]] = []
+    seen = _load_seen_uids(username)
     try:
-        try:
-            M.login(addr, app_pw)
-        except imaplib.IMAP4.error as exc:
-            return [{"ok": False, "filename": None, "error": f"Gmail login failed: {exc}"}]
-        M.select("INBOX")
-        # Standard IMAP only (X-GM-RAW often BAD from imaplib quoting)
-        typ, data = M.search(None, "FROM", "whatsappbanking@alerts.sbi.bank.in")
-        if typ != "OK" or not data or not data[0]:
-            typ, data = M.search(None, "SUBJECT", "Deposit Account Statement")
-        if typ != "OK" or not data or not data[0]:
-            return []
-        ids = data[0].split()[-limit:]
-        for mid in reversed(ids):
-            typ, fetched = M.fetch(mid, "(RFC822)")
-            if typ != "OK" or not fetched:
+        wanted: list[str] = []
+
+        def _add(uids: list[str]) -> None:
+            for uid in uids:
+                if uid not in wanted:
+                    wanted.append(uid)
+
+        for sender in _SENDERS:
+            typ, data = client.uid("SEARCH", "UNSEEN", "FROM", sender)
+            if typ == "OK":
+                _add(_uid_list(data))
+            typ, data = client.uid("SEARCH", "FROM", sender)
+            if typ == "OK":
+                recent = [u for u in _uid_list(data) if u not in seen]
+                _add(recent[-limit:])
+
+        # Newest first, and never chew through the whole mailbox.
+        wanted = list(reversed(wanted))[: max(limit, 6)]
+        newly_seen: set[str] = set()
+        for uid in wanted:
+            try:
+                typ, fetched = client.uid("FETCH", uid, "(BODY.PEEK[])")
+            except Exception as exc:
+                results.append({"ok": False, "filename": None, "error": f"Gmail fetch failed: {exc}"})
+                break
+            if typ != "OK":
                 continue
-            raw = None
-            for item in fetched:
-                if isinstance(item, tuple) and len(item) > 1 and isinstance(item[1], (bytes, bytearray)):
-                    raw = item[1]
-                    break
+            raw = _extract_rfc822(fetched)
             if not raw:
                 continue
             msg = email.message_from_bytes(raw)
-            if not _is_whatsapp_deposit_statement(msg):
+            if not _is_valid_statement_email(msg):
+                newly_seen.add(uid)
                 continue
+            imported_any = False
             for filename, content in _pdf_parts_from_message(msg):
-                if not filename.lower().startswith("depositaccountstatement"):
+                fn_lower = filename.lower()
+                if "registeredaccount" in fn_lower or "registered_account" in fn_lower:
+                    continue
+                if not (
+                    fn_lower.startswith("depositaccountstatement")
+                    or fn_lower.startswith("email_statement")
+                ):
                     continue
                 try:
                     result = import_statement_bytes(username, content, filename)
-                    mid_s = mid.decode() if isinstance(mid, (bytes, bytearray)) else str(mid)
-                    result["source"] = f"gmail-imap:{mid_s}"
+                    result["source"] = f"gmail-imap:{uid}"
                     results.append(result)
+                    imported_any = True
                 except Exception as exc:
                     results.append({"ok": False, "filename": filename, "error": str(exc)})
+            if imported_any or not _pdf_parts_from_message(msg):
+                newly_seen.add(uid)
+        if newly_seen:
+            _save_seen_uids(username, seen | newly_seen)
     finally:
-        try:
-            M.logout()
-        except Exception:
-            pass
+        _close_imap(client)
     return results
 
 

@@ -71,6 +71,17 @@ def _token_in_text(token: str, text: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", text) is not None
 
 
+_IGNORED_MATCH_TOKENS = {
+    "anand", "dr", "cr", "no", "to", "at", "rem", "wdl", "tfr", "dep",
+    "upi", "payme", "manda", "nach", "achdr",
+    "sbin", "hdfc", "icic", "yesb", "fdrl", "utib", "cnrb", "sibl", "nspb",
+    "kkbk", "ubin", "sbip", "idfb", "axis", "kotak", "dcbl", "pmcb",
+    "barb", "punb", "mahb", "bkid", "cbin", "alla", "orbc", "vijb",
+    "stbp", "srcb", "pytm", "ratn", "finf", "airp", "ioba", "idib",
+    "jiop", "ppiw",
+}
+
+
 def _score_contact_match(c: dict[str, Any], text_lower: str) -> tuple[int, int] | None:
     """Scores a single contact against search text using token matching rules.
 
@@ -82,7 +93,7 @@ def _score_contact_match(c: dict[str, Any], text_lower: str) -> tuple[int, int] 
         name_hit = len(name)
     else:
         for part in re.split(r"[^a-z0-9]+", name):
-            if len(part) >= 2 and _token_in_text(part, text_lower):
+            if len(part) >= 2 and part not in _IGNORED_MATCH_TOKENS and _token_in_text(part, text_lower):
                 name_hit = max(name_hit, len(part))
     if name_hit:
         return (name_hit, -len(name))
@@ -90,7 +101,7 @@ def _score_contact_match(c: dict[str, Any], text_lower: str) -> tuple[int, int] 
     best_alias = 0
     for alias in c.get("aliases") or []:
         a = (alias or "").lower().strip()
-        if a in {"anand"}:
+        if a in _IGNORED_MATCH_TOKENS:
             continue
         if a and _token_in_text(a, text_lower):
             best_alias = max(best_alias, len(a))

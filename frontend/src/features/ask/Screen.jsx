@@ -103,6 +103,7 @@ export default function AskScreen({
           live: true,
         },
       ])
+      if (onRefresh) onRefresh()
     } catch (ex) {
       setMessages((prev) => [
         ...prev,
@@ -142,6 +143,38 @@ export default function AskScreen({
     }
   }
 
+  const confirmAll = async (msgIdx, cards) => {
+    const validTokens = (cards || []).map((c) => c.confirm_token).filter(Boolean)
+    if (!validTokens.length) return
+    setBusy(true)
+    try {
+      let savedCount = 0
+      for (const token of validTokens) {
+        const res = await assistantConfirm(token)
+        if (res.ok) savedCount++
+      }
+      setMessages((prev) =>
+        prev.map((m, i) => {
+          if (i !== msgIdx) return m
+          return {
+            ...m,
+            text: m.text ? `${m.text}\n\n✓ Saved ${savedCount} confirmed transaction(s).` : `✓ Saved ${savedCount} confirmed transaction(s).`,
+            cards: [],
+            live: false,
+          }
+        }),
+      )
+      if (onRefresh) onRefresh()
+    } catch (ex) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', text: ex.message || 'Confirm failed', cards: [] },
+      ])
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const last = messages.length - 1
 
   return (
@@ -169,6 +202,18 @@ export default function AskScreen({
         {messages.map((m, i) => (
           <div key={i} className={`ask-msg ${m.role}`}>
             <FormattedMessage text={m.text} />
+            {m.cards?.length > 1 && m.live && i === last ? (
+              <div style={{ marginBottom: '8px' }}>
+                <button
+                  type="button"
+                  className="btn primary"
+                  disabled={busy}
+                  onClick={() => confirmAll(i, m.cards)}
+                >
+                  ✓ Confirm all ({m.cards.length})
+                </button>
+              </div>
+            ) : null}
             {m.cards?.map((card, ci) => (
               <div key={ci} className={`confirm-card ${m.live && i === last ? '' : 'disabled'}`}>
                 <p>{card.message || card.title}</p>

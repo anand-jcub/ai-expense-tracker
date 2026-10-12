@@ -59,7 +59,7 @@ from .services import (
     split_ratio_from_people,
 )
 from .import_ingest import import_statement_bytes, read_last_import
-from .templates import login_page, page, register_page
+from .templates import highnes_share_page, login_page, page, register_page
 
 logger = logging.getLogger(__name__)
 
@@ -244,8 +244,22 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         path: str = "/",
         tab: str | None = None,
         tx_filter: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        exclude_credits: str | None = None,
     ) -> None:
-        q = {k: v for k, v in {"message": message, "error": error, "tx_filter": tx_filter}.items() if v}
+        q = {
+            k: v
+            for k, v in {
+                "message": message,
+                "error": error,
+                "tx_filter": tx_filter,
+                "start_date": start_date,
+                "end_date": end_date,
+                "exclude_credits": exclude_credits,
+            }.items()
+            if v
+        }
         query = urllib.parse.urlencode(q)
         hash_suffix = f"#{tab}" if tab else ""
         target = f"{path}?{query}{hash_suffix}" if query else f"{path}{hash_suffix}"
@@ -395,7 +409,12 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             expense_type = str(body.get("expense_type") or "Personal").strip()
             if not category or expense_type not in EXPENSE_TYPES:
                 raise ValueError("Choose a category and expense type.")
-            split_ratio = split_ratio_from_people(body.get("split_people") or 1)
+            shared_with = str(body.get("shared_with") or "").strip() or None
+            if shared_with:
+                expense_type = "Shared"
+            my_share_raw = body.get("my_share")
+            my_share = Decimal(str(my_share_raw)) if my_share_raw not in (None, "") else None
+            split_ratio = split_ratio_from_people(body.get("split_people") or (2 if expense_type == "Shared" else 1))
             notes = str(body.get("notes") or "").strip() or None
             learn = bool(body.get("learn"))
         except (ValueError, InvalidOperation) as exc:
@@ -416,6 +435,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     notes,
                     learn,
                     uploaded_by=username,
+                    shared_with=shared_with,
+                    my_share=my_share,
                 )
             from .cloud_sync import trigger_cloud_sync_bg
 
@@ -468,10 +489,13 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         end_date: str = "",
         query: str = "",
         limit: int | None = None,
+        category: str = "",
+        exclude_business: bool = False,
     ) -> list[dict]:
         """Filter export_rows like dashboard period + text search (for AI / API)."""
         start_date = (start_date or "").strip()
         end_date = (end_date or "").strip()
+        cat_filter = (category or "").strip()
         q = (query or "").strip().lower()
         out: list[dict] = []
         for row in rows:
@@ -480,6 +504,23 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 continue
             if end_date and d > end_date:
                 continue
+            row_cat = str(row.get("category") or "").strip()
+            row_type = str(row.get("expense_type") or "").strip()
+            if exclude_business and (
+                row_cat.lower() == "business" or row_type.lower() == "business"
+            ):
+                continue
+            if cat_filter:
+                if cat_filter.lower() == "uncategorized":
+                    status = str(row.get("status") or "").lower()
+                    if row_cat and row_cat.lower() != "uncategorized" and status != "needs_review":
+                        continue
+                else:
+                    if row_cat.lower() != cat_filter.lower():
+                        continue
+                debit_val = Decimal(str(row.get("debit") or 0))
+                if debit_val <= 0:
+                    continue
             if q:
                 blob = " ".join(
                     str(row.get(k) or "")
@@ -552,28 +593,47 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             self.respond_json({"error": "Failed to export transactions"}, status=500)
 
     def handle_api_transactions(self, username: str, params: dict) -> None:
-        """GET /api/transactions — filtered export rows for agents (default limit 50)."""
+        """GET /api/transactions — filtered export rows for agents/mobile."""
         start = (params.get("start_date") or params.get("start") or [""])[0]
         end = (params.get("end_date") or params.get("end") or [""])[0]
         q = (params.get("q") or params.get("query") or [""])[0]
-        limit_raw = (params.get("limit") or ["50"])[0]
-        try:
-            limit = max(1, min(int(limit_raw or 50), 500))
-        except ValueError:
+        category = (params.get("category") or [""])[0].strip()
+        ex_vals = params.get("exclude_business") or ["1"]
+        exclude_business = str(ex_vals[-1]).lower() not in {"0", "false", "no", "off"}
+        limit_raw = (params.get("limit") or [""])[0].strip().lower()
+
+        if limit_raw in ("all", "0", "none"):
+            limit = None
+        elif limit_raw.isdigit():
+            limit = max(1, min(int(limit_raw), 5000))
+        elif category:
+            # Category drilldown: return all in-period items without silent capping (Invariant 1)
+            limit = None
+        else:
             limit = 50
+
         try:
             db_path = self._db_path_for(username)
             with connect(db_path) as conn:
                 rows = export_rows(conn)
-            # newest first for agent browse
+            # newest first for agent/mobile browse
             rows = list(reversed(rows))
-            filtered = self._filter_export_rows(rows, start, end, q, limit)
+            filtered = self._filter_export_rows(
+                rows,
+                start_date=start,
+                end_date=end,
+                query=q,
+                limit=limit,
+                category=category,
+                exclude_business=exclude_business,
+            )
             self.respond_json(
                 {
                     "username": username,
                     "count": len(filtered),
                     "start_date": start or None,
                     "end_date": end or None,
+                    "category": category or None,
                     "query": q or None,
                     "transactions": filtered,
                 }
@@ -592,6 +652,26 @@ class ExpenseHandler(BaseHTTPRequestHandler):
         logger.debug("%s %s", self.command, self.path)
 
     # ── GET routing ──────────────────────────────────────────────────────────
+
+    def handle_highnes_share(self, params: dict) -> None:
+        """Read-only Highnes ledger. No login, no other expenses."""
+        from .db import connect
+        from .highnes_ledger import get_highnes_ledger_summary, share_key_matches
+
+        key = (params.get("key") or [""])[0]
+        if not share_key_matches(DATA_DIR, key):
+            self.respond_html(
+                b"<p>This link is not valid.</p>",
+                status=403,
+            )
+            return
+        db_path = DATA_DIR / "expenses_anand.db"
+        if not db_path.is_file():
+            self.respond_html(b"<p>Ledger is not available.</p>", status=404)
+            return
+        with connect(db_path) as conn:
+            summary = get_highnes_ledger_summary(conn)
+        self.respond_html(highnes_share_page(summary))
 
     def do_GET(self) -> None:
         try:
@@ -623,6 +703,9 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/register":
                 self.respond_html(register_page())
+                return
+            if parsed.path == "/share/highnes":
+                self.handle_highnes_share(params)
                 return
             if parsed.path == "/api/health":
                 self.respond_json(
@@ -685,6 +768,20 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 with connect(db_path) as conn:
                     data = dashboard_data(conn)
                     data["onboarding"] = onboarding_status(conn)
+                    from .highnes_ledger import get_highnes_ledger_summary, get_or_create_share_key
+
+                    data["highnes"] = get_highnes_ledger_summary(conn)
+                    share_key = get_or_create_share_key(DATA_DIR)
+                    share_q = "/share/highnes?key=" + urllib.parse.quote(share_key)
+                    cloud = ""
+                    try:
+                        cfg_path = Path(__file__).resolve().parents[1] / "cloud-mcp" / ".deploy-config.json"
+                        if cfg_path.is_file():
+                            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                            cloud = str(cfg.get("url") or "").rstrip("/")
+                    except Exception:
+                        cloud = ""
+                    data["highnes_share_path"] = (cloud + share_q) if cloud else share_q
                     from .contacts import get_all_balances
 
                     partner_balances = [
@@ -698,15 +795,10 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                         for item in get_all_balances(conn)
                         if item["balance"]["net"] != 0
                     ]
-                # Period form always sends start_date when applied. First load
-                # (no period params) → exclude business by default.
-                period_touched = any(
-                    k in params
-                    for k in ("start_date", "end_date", "exclude_business", "use_my_share")
-                )
-                exclude_business = (
-                    "exclude_business" in params if period_touched else True
-                )
+                # Expenses exclude business unless the user explicitly turns it off.
+                # Checkbox sends 0 (hidden) then 1 (checked). Last value wins.
+                ex_vals = params.get("exclude_business") or ["1"]
+                exclude_business = str(ex_vals[-1]).lower() not in {"0", "false", "no", "off"}
                 gmail_addr, gmail_pw = get_gmail_imap(username)
                 self.respond_html(
                     page(
@@ -1102,7 +1194,15 @@ class ExpenseHandler(BaseHTTPRequestHandler):
             expense_type = params.get("expense_type", ["Personal"])[0].strip()
             if not category or expense_type not in EXPENSE_TYPES:
                 raise ValueError("Choose a category and expense type.")
-            split_ratio = split_ratio_from_people(params.get("split_people", ["1"])[0])
+            shared_with = params.get("shared_with", [""])[0].strip() or None
+            if shared_with:
+                expense_type = "Shared"
+            my_share_raw = params.get("my_share", [""])[0].strip()
+            my_share = Decimal(my_share_raw) if my_share_raw else None
+            raw_people = params.get("split_people", [""])[0].strip()
+            if not raw_people or (expense_type == "Shared" and raw_people in ("1", "0")):
+                raw_people = "2" if expense_type == "Shared" else "1"
+            split_ratio = split_ratio_from_people(raw_people)
             notes = params.get("notes", [""])[0].strip() or None
             learn = "learn" in params
             db_path = self._db_path_for(username)
@@ -1119,6 +1219,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     notes,
                     learn,
                     uploaded_by=username,
+                    shared_with=shared_with,
+                    my_share=my_share,
                 )
             self.redirect(message="Manual transaction added. Dashboard updated.")
         except ValueError as exc:
@@ -1148,6 +1250,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 split_ratio = split_ratio_from_people(params["split_people"][0])
             else:
                 split_ratio = Decimal(params.get("split_ratio", ["0.5"])[0] or "0.5")
+            my_share_raw = params.get("my_share", [""])[0].strip()
+            my_share = Decimal(my_share_raw) if my_share_raw else None
             notes = params.get("notes", [""])[0].strip() or None
             learn = "learn" in params
             if not category:
@@ -1157,14 +1261,21 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 review_transaction(
                     conn, transaction_id, category, expense_type, split_ratio, notes, learn,
                     shared_with=shared_with,
+                    my_share=my_share,
                 )
                 if shared_with and self._is_registered_username(shared_with):
                     self.sync_shared_transaction(conn, transaction_id, username, shared_with)
             tx_filter = params.get("tx_filter", ["needs_review"])[0]
+            start_date = params.get("start_date", [""])[0].strip() or None
+            end_date = params.get("end_date", [""])[0].strip() or None
+            exclude_credits = params.get("exclude_credits", [""])[0].strip() or None
             self.redirect(
                 message="Transaction confirmed.",
                 tab="review",
                 tx_filter=tx_filter,
+                start_date=start_date,
+                end_date=end_date,
+                exclude_credits=exclude_credits,
             )
         except ValueError as exc:
             self.redirect(error=str(exc))
@@ -1195,6 +1306,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 shared_with = params.get(f"shared_with_{transaction_id}", [""])[0].strip() or None
                 if shared_with:
                     expense_type = "Shared"
+                my_share_raw = params.get(f"my_share_{transaction_id}", [""])[0].strip()
+                my_share = Decimal(my_share_raw) if my_share_raw else None
                 raw_people = params.get(f"split_people_{transaction_id}", [""])[0].strip()
                 if not raw_people or (expense_type == "Shared" and raw_people in ("1", "0")):
                     raw_people = "2" if expense_type == "Shared" else "1"
@@ -1204,10 +1317,15 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 review_transaction(
                     conn, transaction_id, category, expense_type, split_ratio, notes, learn,
                     shared_with=shared_with,
+                    my_share=my_share,
                 )
                 if shared_with and self._is_registered_username(shared_with):
                     self.sync_shared_transaction(conn, transaction_id, username, shared_with)
                 confirmed += 1
+
+        start_date = params.get("start_date", [""])[0].strip() or None
+        end_date = params.get("end_date", [""])[0].strip() or None
+        exclude_credits = params.get("exclude_credits", [""])[0].strip() or None
 
         if confirmed:
             from .cloud_sync import trigger_cloud_sync_bg
@@ -1218,11 +1336,28 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                 message=f"Confirmed {confirmed} review change(s).",
                 tab="review",
                 tx_filter=tx_filter,
+                start_date=start_date,
+                end_date=end_date,
+                exclude_credits=exclude_credits,
             )
         elif skipped:
-            self.redirect(error="No changes saved. Choose a category for at least one review row.")
+            self.redirect(
+                error="No changes saved. Choose a category for at least one review row.",
+                tab="review",
+                tx_filter=params.get("tx_filter", ["needs_review"])[0],
+                start_date=start_date,
+                end_date=end_date,
+                exclude_credits=exclude_credits,
+            )
         else:
-            self.redirect(message="Nothing waiting for review.")
+            self.redirect(
+                message="Nothing waiting for review.",
+                tab="review",
+                tx_filter=params.get("tx_filter", ["needs_review"])[0],
+                start_date=start_date,
+                end_date=end_date,
+                exclude_credits=exclude_credits,
+            )
 
     def handle_edit_classifications(self, username: str) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -1244,6 +1379,8 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     shared_with = params.get(f"edit_shared_with_{transaction_id}", [""])[0].strip() or None
                     if shared_with:
                         expense_type = "Shared"
+                    my_share_raw = params.get(f"edit_my_share_{transaction_id}", [""])[0].strip()
+                    my_share = Decimal(my_share_raw) if my_share_raw else None
                     raw_people = params.get(f"edit_split_people_{transaction_id}", [""])[0].strip()
                     if not raw_people or (expense_type == "Shared" and raw_people in ("1", "0")):
                         raw_people = "2" if expense_type == "Shared" else "1"
@@ -1253,10 +1390,15 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     review_transaction(
                         conn, transaction_id, category, expense_type, split_ratio, notes, learn,
                         shared_with=shared_with,
+                        my_share=my_share,
                     )
                     if shared_with and self._is_registered_username(shared_with):
                         self.sync_shared_transaction(conn, transaction_id, username, shared_with)
                     updated += 1
+
+            start_date = params.get("start_date", [""])[0].strip() or None
+            end_date = params.get("end_date", [""])[0].strip() or None
+            exclude_credits = params.get("exclude_credits", [""])[0].strip() or None
 
             if updated:
                 from .cloud_sync import trigger_cloud_sync_bg
@@ -1267,11 +1409,28 @@ class ExpenseHandler(BaseHTTPRequestHandler):
                     message=f"Saved {updated} classification edit(s).",
                     tab="review",
                     tx_filter=tx_filter,
+                    start_date=start_date,
+                    end_date=end_date,
+                    exclude_credits=exclude_credits,
                 )
             elif skipped:
-                self.redirect(error="No edits saved. Choose a category for at least one classified row.")
+                self.redirect(
+                    error="No edits saved. Choose a category for at least one classified row.",
+                    tab="review",
+                    tx_filter=params.get("tx_filter", ["classified"])[0],
+                    start_date=start_date,
+                    end_date=end_date,
+                    exclude_credits=exclude_credits,
+                )
             else:
-                self.redirect(message="No classified rows selected.")
+                self.redirect(
+                    message="No classified rows selected.",
+                    tab="review",
+                    tx_filter=params.get("tx_filter", ["classified"])[0],
+                    start_date=start_date,
+                    end_date=end_date,
+                    exclude_credits=exclude_credits,
+                )
         except ValueError as exc:
             self.redirect(error=str(exc))
         except Exception as exc:

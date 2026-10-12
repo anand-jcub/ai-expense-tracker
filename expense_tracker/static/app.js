@@ -606,26 +606,237 @@
     window.updateStickyBatchCounts();
   };
 
+  window.handlePeopleSplitChange = function (inputEl) {
+    if (!inputEl) return;
+    var rowKey = inputEl.getAttribute('data-row') || '';
+    var cleanKey = rowKey.replace('edit_', '');
+    var total = parseFloat(inputEl.getAttribute('data-total') || '0');
+    var val = parseInt(inputEl.value, 10);
+    var form = inputEl.closest('.review-form');
+    if (!form) return;
+    var myInput = form.querySelector('input[name="my_share_' + cleanKey + '"], input[name="edit_my_share_' + cleanKey + '"]');
+    var otherInput = form.querySelector('input[name="other_share_' + cleanKey + '"], input[name="edit_other_share_' + cleanKey + '"]');
+    if (val > 0 && total > 0) {
+      var myShare = (total / val).toFixed(2);
+      var otherShare = Math.max(0, total - parseFloat(myShare)).toFixed(2);
+      if (myInput) myInput.value = myShare;
+      if (otherInput) otherInput.value = otherShare;
+    }
+  };
+
+  window.handleMyShareChange = function (inputEl) {
+    if (!inputEl) return;
+    var rowKey = inputEl.getAttribute('data-row') || '';
+    var cleanKey = rowKey.replace('edit_', '');
+    var total = parseFloat(inputEl.getAttribute('data-total') || '0');
+    var form = inputEl.closest('.review-form');
+    if (!form) return;
+    var peopleInput = form.querySelector('input[name="split_people_' + cleanKey + '"], input[name="edit_split_people_' + cleanKey + '"]');
+    var otherInput = form.querySelector('input[name="other_share_' + cleanKey + '"], input[name="edit_other_share_' + cleanKey + '"]');
+    var raw = inputEl.value.trim();
+    if (raw === '') {
+      if (otherInput) otherInput.value = '';
+      if (peopleInput) peopleInput.value = '';
+      return;
+    }
+    var myVal = parseFloat(raw);
+    if (!isNaN(myVal)) {
+      var otherShare = Math.max(0, total - myVal).toFixed(2);
+      if (otherInput) otherInput.value = otherShare;
+      if (peopleInput) {
+        if (total > 0 && Math.abs(myVal - (total / 2)) < 0.01) {
+          peopleInput.value = '2';
+        } else if (total > 0 && Math.abs(myVal - (total / 3)) < 0.01) {
+          peopleInput.value = '3';
+        } else if (total > 0 && Math.abs(myVal - (total / 4)) < 0.01) {
+          peopleInput.value = '4';
+        } else {
+          peopleInput.value = '';
+        }
+      }
+    }
+  };
+
+  window.handleOtherShareChange = function (inputEl) {
+    if (!inputEl) return;
+    var rowKey = inputEl.getAttribute('data-row') || '';
+    var cleanKey = rowKey.replace('edit_', '');
+    var total = parseFloat(inputEl.getAttribute('data-total') || '0');
+    var form = inputEl.closest('.review-form');
+    if (!form) return;
+    var peopleInput = form.querySelector('input[name="split_people_' + cleanKey + '"], input[name="edit_split_people_' + cleanKey + '"]');
+    var myInput = form.querySelector('input[name="my_share_' + cleanKey + '"], input[name="edit_my_share_' + cleanKey + '"]');
+    var raw = inputEl.value.trim();
+    if (raw === '') {
+      if (myInput) myInput.value = '';
+      if (peopleInput) peopleInput.value = '';
+      return;
+    }
+    var otherVal = parseFloat(raw);
+    if (!isNaN(otherVal)) {
+      var myShare = Math.max(0, total - otherVal).toFixed(2);
+      if (myInput) myInput.value = myShare;
+      if (peopleInput) {
+        if (total > 0 && Math.abs(parseFloat(myShare) - (total / 2)) < 0.01) {
+          peopleInput.value = '2';
+        } else if (total > 0 && Math.abs(parseFloat(myShare) - (total / 3)) < 0.01) {
+          peopleInput.value = '3';
+        } else if (total > 0 && Math.abs(parseFloat(myShare) - (total / 4)) < 0.01) {
+          peopleInput.value = '4';
+        } else {
+          peopleInput.value = '';
+        }
+      }
+    }
+  };
+
   window.toggleTypeFields = function (selectEl) {
     if (!selectEl) return;
-    var rowKey = selectEl.getAttribute('data-row');
+    var rowKey = selectEl.getAttribute('data-row') || '';
+    var cleanKey = rowKey.replace('edit_', '');
     var type = selectEl.value;
     var showShared = type === 'Shared';
     document.querySelectorAll('.shared-only-field[data-row="' + rowKey + '"]').forEach(function (el) {
       el.style.display = showShared ? '' : 'none';
+      el.querySelectorAll('input').forEach(function (inputEl) {
+        inputEl.disabled = !showShared;
+      });
       if (showShared) {
-        var inputEl = el.querySelector('input[type="number"]');
+        var inputEl = el.querySelector('input[name^="split_people_"], input[name^="edit_split_people_"]');
         if (inputEl && (!inputEl.value || inputEl.value === '1' || inputEl.value === '0')) {
           inputEl.value = '2';
         }
       }
     });
+    if (showShared) {
+      var form = selectEl.closest('.review-form') || document.querySelector('.review-form[data-row="' + rowKey + '"]');
+      if (form) {
+        var myInput = form.querySelector('input[name="my_share_' + cleanKey + '"], input[name="edit_my_share_' + cleanKey + '"]');
+        var otherInput = form.querySelector('input[name="other_share_' + cleanKey + '"], input[name="edit_other_share_' + cleanKey + '"]');
+        var peopleInput = form.querySelector('input[name="split_people_' + cleanKey + '"], input[name="edit_split_people_' + cleanKey + '"]');
+        if (myInput && (!myInput.value || myInput.value === '0.00' || myInput.value === '0')) {
+          var total = parseFloat(myInput.getAttribute('data-total') || '0');
+          if (total > 0) {
+            var myShare = (total / 2).toFixed(2);
+            myInput.value = myShare;
+            if (otherInput) otherInput.value = Math.max(0, total - parseFloat(myShare)).toFixed(2);
+            if (peopleInput && !peopleInput.value) peopleInput.value = '2';
+          }
+        }
+      }
+    }
     // Keep chip UI in sync if select changed programmatically
     var row = document.querySelector('.type-chip-row[data-row="' + rowKey + '"]');
     if (row) {
       row.querySelectorAll('.type-chip').forEach(function (c) {
         c.classList.toggle('active', c.getAttribute('data-type') === type);
       });
+    }
+  };
+
+  // Manual form handlers
+  window.toggleManualTypeFields = function (selectEl) {
+    if (!selectEl) return;
+    var showShared = selectEl.value === 'Shared';
+    var form = selectEl.closest('form');
+    if (!form) return;
+    form.querySelectorAll('.manual-shared-field').forEach(function (el) {
+      el.style.display = showShared ? '' : 'none';
+    });
+    if (showShared) {
+      var amtEl = form.querySelector('#manual-amount');
+      var myEl = form.querySelector('#manual-my-share');
+      var otherEl = form.querySelector('#manual-other-share');
+      var peopleEl = form.querySelector('#manual-split-people');
+      var amt = parseFloat(amtEl ? amtEl.value : 0);
+      if (amt > 0 && myEl && !myEl.value) {
+        var myShare = (amt / 2).toFixed(2);
+        myEl.value = myShare;
+        if (otherEl) otherEl.value = Math.max(0, amt - parseFloat(myShare)).toFixed(2);
+        if (peopleEl && !peopleEl.value) peopleEl.value = '2';
+      }
+    }
+  };
+
+  window.handleManualAmountChange = function (amtEl) {
+    if (!amtEl) return;
+    var form = amtEl.closest('form');
+    if (!form) return;
+    var typeEl = form.querySelector('#manual-expense-type');
+    if (typeEl && typeEl.value === 'Shared') {
+      var peopleEl = form.querySelector('#manual-split-people');
+      if (peopleEl && peopleEl.value) {
+        window.handleManualPeopleChange(peopleEl);
+      }
+    }
+  };
+
+  window.handleManualPeopleChange = function (peopleEl) {
+    if (!peopleEl) return;
+    var form = peopleEl.closest('form');
+    if (!form) return;
+    var amtEl = form.querySelector('#manual-amount');
+    var myEl = form.querySelector('#manual-my-share');
+    var otherEl = form.querySelector('#manual-other-share');
+    var total = parseFloat(amtEl ? amtEl.value : 0);
+    var val = parseInt(peopleEl.value, 10);
+    if (val > 0 && total > 0) {
+      var myShare = (total / val).toFixed(2);
+      if (myEl) myEl.value = myShare;
+      if (otherEl) otherEl.value = Math.max(0, total - parseFloat(myShare)).toFixed(2);
+    }
+  };
+
+  window.handleManualMyShareChange = function (myEl) {
+    if (!myEl) return;
+    var form = myEl.closest('form');
+    if (!form) return;
+    var amtEl = form.querySelector('#manual-amount');
+    var otherEl = form.querySelector('#manual-other-share');
+    var peopleEl = form.querySelector('#manual-split-people');
+    var total = parseFloat(amtEl ? amtEl.value : 0);
+    var raw = myEl.value.trim();
+    if (raw === '') {
+      if (otherEl) otherEl.value = '';
+      if (peopleEl) peopleEl.value = '';
+      return;
+    }
+    var myVal = parseFloat(raw);
+    if (!isNaN(myVal)) {
+      if (otherEl) otherEl.value = Math.max(0, total - myVal).toFixed(2);
+      if (peopleEl) {
+        if (total > 0 && Math.abs(myVal - (total / 2)) < 0.01) peopleEl.value = '2';
+        else if (total > 0 && Math.abs(myVal - (total / 3)) < 0.01) peopleEl.value = '3';
+        else if (total > 0 && Math.abs(myVal - (total / 4)) < 0.01) peopleEl.value = '4';
+        else peopleEl.value = '';
+      }
+    }
+  };
+
+  window.handleManualOtherShareChange = function (otherEl) {
+    if (!otherEl) return;
+    var form = otherEl.closest('form');
+    if (!form) return;
+    var amtEl = form.querySelector('#manual-amount');
+    var myEl = form.querySelector('#manual-my-share');
+    var peopleEl = form.querySelector('#manual-split-people');
+    var total = parseFloat(amtEl ? amtEl.value : 0);
+    var raw = otherEl.value.trim();
+    if (raw === '') {
+      if (myEl) myEl.value = '';
+      if (peopleEl) peopleEl.value = '';
+      return;
+    }
+    var otherVal = parseFloat(raw);
+    if (!isNaN(otherVal)) {
+      var myShare = Math.max(0, total - otherVal).toFixed(2);
+      if (myEl) myEl.value = myShare;
+      if (peopleEl) {
+        if (total > 0 && Math.abs(parseFloat(myShare) - (total / 2)) < 0.01) peopleEl.value = '2';
+        else if (total > 0 && Math.abs(parseFloat(myShare) - (total / 3)) < 0.01) peopleEl.value = '3';
+        else if (total > 0 && Math.abs(parseFloat(myShare) - (total / 4)) < 0.01) peopleEl.value = '4';
+        else peopleEl.value = '';
+      }
     }
   };
 
@@ -654,7 +865,28 @@
   document.addEventListener('change', function (e) {
     if (e.target && (e.target.classList.contains('category-select') ||
         (e.target.name && (e.target.name.indexOf('category_') === 0 || e.target.name.indexOf('edit_category_') === 0)))) {
+      var val = (e.target.value || '').trim();
+      if (val === 'Food' || val === 'Groceries') {
+        var rowKey = e.target.getAttribute('data-row');
+        if (rowKey) {
+          var row = document.querySelector('.type-chip-row[data-row="' + rowKey + '"]');
+          var sharedChip = row ? row.querySelector('.type-chip[data-type="Shared"]') : null;
+          var personalChip = row ? row.querySelector('.type-chip[data-type="Personal"]') : null;
+          if (sharedChip && (!personalChip || personalChip.classList.contains('active'))) {
+            window.selectExpenseType(sharedChip);
+          }
+        }
+      }
       window.updateStickyBatchCounts();
+    } else if (e.target && e.target.name === 'category' && e.target.closest('form.manual')) {
+      var val = (e.target.value || '').trim();
+      if (val === 'Food' || val === 'Groceries') {
+        var typeSel = e.target.closest('form.manual').querySelector('#manual-expense-type');
+        if (typeSel && typeSel.value === 'Personal') {
+          typeSel.value = 'Shared';
+          window.toggleManualTypeFields(typeSel);
+        }
+      }
     }
   });
 

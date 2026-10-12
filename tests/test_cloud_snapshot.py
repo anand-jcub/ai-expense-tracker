@@ -52,13 +52,44 @@ class SnapshotGlanceTests(unittest.TestCase):
         self.assertNotIn("raw_sql", snap)
         self.assertIn("people", snap)
 
-    def test_person_vs_merchant_names(self) -> None:
-        self.assertTrue(_looks_like_person("Highnes"))
-        self.assertTrue(_looks_like_person("Anupriya"))
-        self.assertFalse(_looks_like_person("Cr Google Utib"))
-        self.assertFalse(_looks_like_person("Branch"))
-        self.assertFalse(_looks_like_person("Kerala Yesb Chalokeral Payme"))
+    def test_business_exclusion_in_snapshot(self) -> None:
+        """FC-02 & FC-09: transactions with category=Business or expense_type=Business are excluded."""
+        tmp = Path(tempfile.mkdtemp())
+        db = tmp / "expenses_biztest.db"
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        init_db(conn)
+        # 1. Normal Food Personal
+        add_manual_transaction(
+            conn, "2026-08-01", "Restaurant", Decimal("500"), "debit", "Food", "Personal", Decimal("1")
+        )
+        # 2. Category=Business, Type=Personal (common in imports)
+        add_manual_transaction(
+            conn, "2026-08-02", "Office Supplies", Decimal("2000"), "debit", "Business", "Personal", Decimal("1")
+        )
+        # 3. Category=Transport, Type=Business
+        add_manual_transaction(
+            conn, "2026-08-03", "Cab for Client", Decimal("400"), "debit", "Transport", "Business", Decimal("1")
+        )
+        conn.close()
+
+        import expense_tracker.cloud_sync as cs
+        old = cs._data_dir
+        cs._data_dir = lambda: tmp
+        try:
+            snap = build_snapshot("biztest")
+        finally:
+            cs._data_dir = old
+
+        dash = snap["dashboard"]
+        # Default dashboard excludes business
+        cats = {c["category"]: c["amount"] for c in dash["by_category"]}
+        self.assertIn("Food", cats)
+        self.assertNotIn("Business", cats)
+        self.assertNotIn("Transport", cats)
+        self.assertEqual(dash["period_debits"], 500.0)
 
 
 if __name__ == "__main__":
     unittest.main()
+

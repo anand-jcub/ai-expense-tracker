@@ -32,11 +32,64 @@ WRITE_TOOLS = (
     "propose_add_manual",
     "propose_categorize_transaction",
     "propose_edit_classification",
+    "categorize_transactions",
+    "confirm_pending_action",
 )
 
 
 def gemini_declarations() -> list[dict[str, Any]]:
     return [
+        {
+            "name": "categorize_transactions",
+            "description": (
+                "Directly categorize or update bank transactions in the database and dashboard. "
+                "Use when the user instructs you to categorize, classify, or recategorize transactions "
+                "(e.g. 'Classify Kerala S as Food', 'Set Allen So and Max Retail to Shopping', 'Categorize #1146 as Food'). "
+                "Writes directly to the database and immediately updates the dashboard."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "List of transactions to categorize",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "transaction_id": {"type": "number", "description": "Transaction ID if known"},
+                                "query": {"type": "string", "description": "Merchant name or search term (e.g. 'Kerala S')"},
+                                "category": {"type": "string", "description": "Category (Food, Shopping, Transport, Groceries, etc.)"},
+                                "expense_type": {"type": "string", "enum": ["Personal", "Shared", "Business"], "description": "Default Personal"},
+                                "split_people": {"type": "number", "description": "Split count if Shared (default 2)"},
+                                "shared_with": {"type": "string", "description": "Partner name if Shared"},
+                                "my_share": {"type": "number", "description": "Custom personal share in ₹"},
+                                "learn": {"type": "boolean", "description": "Remember rule for future imports (default true)"},
+                                "notes": {"type": "string"},
+                            },
+                            "required": ["category"],
+                        },
+                    },
+                    "transaction_id": {"type": "number", "description": "Single transaction ID if not using items list"},
+                    "query": {"type": "string", "description": "Single merchant query if not using items list"},
+                    "category": {"type": "string", "description": "Single category if not using items list"},
+                    "expense_type": {"type": "string", "enum": ["Personal", "Shared", "Business"]},
+                    "learn": {"type": "boolean"},
+                },
+            },
+        },
+        {
+            "name": "confirm_pending_action",
+            "description": (
+                "Confirm and execute pending proposals or cards when user says 'yes', 'confirm', 'apply', 'looks good', or 'done'. "
+                "Executes all currently pending actions or the specified token."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "token": {"type": "string", "description": "Optional specific confirmation token"},
+                },
+            },
+        },
         {
             "name": "ask_books",
             "description": (
@@ -198,6 +251,8 @@ def gemini_declarations() -> list[dict[str, Any]]:
                     "direction": {"type": "string", "description": "debit or credit"},
                     "notes": {"type": "string"},
                     "split_people": {"type": "number"},
+                    "shared_with": {"type": "string", "description": "Partner/contact name if Shared"},
+                    "my_share": {"type": "number", "description": "Custom personal share amount in ₹"},
                 },
                 "required": ["amount", "description"],
             },
@@ -233,6 +288,7 @@ def gemini_declarations() -> list[dict[str, Any]]:
                     "expense_type": {"type": "string", "enum": ["Personal", "Shared"], "description": "Personal or Shared (default Personal)"},
                     "split_people": {"type": "number", "description": "Number of split people if Shared (default 2)"},
                     "shared_with": {"type": "string", "description": "Partner/contact name if Shared"},
+                    "my_share": {"type": "number", "description": "Custom personal share amount in ₹"},
                     "learn": {"type": "boolean", "description": "Set True to remember category rule for this merchant for future imports"},
                     "notes": {"type": "string"},
                 },
@@ -256,6 +312,7 @@ def gemini_declarations() -> list[dict[str, Any]]:
                     "new_expense_type": {"type": "string", "enum": ["Personal", "Shared"], "description": "Personal or Shared"},
                     "split_people": {"type": "number", "description": "Number of split people if Shared (default 2)"},
                     "shared_with": {"type": "string", "description": "Partner name if Shared"},
+                    "my_share": {"type": "number", "description": "Custom personal share amount in ₹"},
                     "learn": {"type": "boolean", "description": "Set True to update/remember rule for future transactions"},
                     "notes": {"type": "string"},
                 },
@@ -291,6 +348,10 @@ def run_tool(conn, username: str, name: str, args: dict[str, Any] | None) -> dic
         return _propose_edit_classification(conn, username, args)
     if name == "propose_add_manual":
         return _propose_add(username, args)
+    if name == "categorize_transactions":
+        return _categorize_transactions(conn, username, args)
+    if name == "confirm_pending_action":
+        return _confirm_pending_action(conn, username, args)
     return {"error": f"Unknown tool {name!r}"}
 
 
@@ -298,6 +359,8 @@ def execute_pending(conn, username: str, item: dict[str, Any]) -> dict[str, Any]
     action = item.get("action")
     payload = item.get("payload") or {}
     if action == "add_manual":
+        my_share_raw = payload.get("my_share")
+        my_share = Decimal(str(my_share_raw)) if my_share_raw not in (None, "") else None
         txn_id = add_manual_transaction(
             conn,
             payload["txn_date"],
@@ -310,6 +373,8 @@ def execute_pending(conn, username: str, item: dict[str, Any]) -> dict[str, Any]
             payload.get("notes"),
             False,
             uploaded_by=username,
+            shared_with=payload.get("shared_with"),
+            my_share=my_share,
         )
         return {"ok": True, "transaction_id": txn_id, "preview": payload}
     if action in {"review_transaction", "edit_classification"}:
@@ -320,6 +385,8 @@ def execute_pending(conn, username: str, item: dict[str, Any]) -> dict[str, Any]
         notes = payload.get("notes")
         learn = bool(payload.get("learn", False))
         shared_with = payload.get("shared_with")
+        my_share_raw = payload.get("my_share")
+        my_share = Decimal(str(my_share_raw)) if my_share_raw not in (None, "") else None
         review_transaction(
             conn,
             transaction_id=tid,
@@ -329,6 +396,7 @@ def execute_pending(conn, username: str, item: dict[str, Any]) -> dict[str, Any]
             notes=notes,
             learn=learn,
             shared_with=shared_with,
+            my_share=my_share,
         )
         return {
             "ok": True,
@@ -710,10 +778,31 @@ def _propose_add(username: str, args: dict[str, Any]) -> dict[str, Any]:
         date_cls.fromisoformat(txn_date)
     except ValueError:
         return {"error": "txn_date must be YYYY-MM-DD"}
-    try:
-        split_ratio = split_ratio_from_people(args.get("split_people") or 1)
-    except ValueError as exc:
-        return {"error": str(exc)}
+    shared_with = str(args.get("shared_with") or "").strip() or None
+    if shared_with:
+        expense_type = "Shared"
+    my_share_raw = args.get("my_share")
+    my_share = None
+    if my_share_raw not in (None, ""):
+        try:
+            my_share = Decimal(str(my_share_raw)).quantize(Decimal("0.01"))
+            expense_type = "Shared"
+            if amount > 0:
+                split_ratio = my_share / amount
+            else:
+                split_ratio = Decimal("1")
+        except Exception:
+            pass
+    else:
+        split_people = args.get("split_people")
+        if expense_type == "Shared" and (not split_people or str(split_people) in ("0", "1")):
+            split_people = 2
+        elif expense_type != "Shared":
+            split_people = 1
+        try:
+            split_ratio = split_ratio_from_people(split_people)
+        except ValueError as exc:
+            return {"error": str(exc)}
     notes = str(args.get("notes") or "").strip() or None
     payload = {
         "txn_date": txn_date,
@@ -724,15 +813,23 @@ def _propose_add(username: str, args: dict[str, Any]) -> dict[str, Any]:
         "expense_type": expense_type,
         "split_ratio": str(split_ratio),
         "notes": notes,
+        "shared_with": shared_with,
+        "my_share": float(my_share) if my_share is not None else None,
     }
     token = pending_store.issue(username, "add_manual", payload)
     verb = "Spend" if direction == "debit" else "Credit"
+    split_info = ""
+    if expense_type == "Shared":
+        if my_share is not None:
+            split_info = f" [Shared with {shared_with or 'partner'}, my share ₹{my_share:,.2f}]"
+        else:
+            split_info = f" [Shared with {shared_with or 'partner'}, split 1/{split_people}]"
     return {
         "needs_confirm": True,
         "confirm_token": token,
         "title": f"{verb} ₹{amount:,.2f}",
         "preview": payload,
-        "message": f"Add {direction} ₹{amount:,.2f} — {description} ({category}) on {txn_date}?",
+        "message": f"Add {direction} ₹{amount:,.2f} — {description} ({category}){split_info} on {txn_date}?",
     }
 
 
@@ -746,7 +843,7 @@ def _list_pending_reviews(conn, args: dict[str, Any]) -> dict[str, Any]:
     start_date = str(args.get("start_date") or "").strip()
     end_date = str(args.get("end_date") or "").strip()
 
-    clauses = ["c.status = 'needs_review'"]
+    clauses = ["c.status = 'needs_review'", "cast(t.debit as float) > 0"]
     params: list[Any] = []
     if start_date:
         clauses.append("t.txn_date >= ?")
@@ -843,23 +940,37 @@ def _propose_categorize(conn, username: str, args: dict[str, Any]) -> dict[str, 
     if shared_with:
         expense_type = "Shared"
 
-    split_people = args.get("split_people")
-    if expense_type == "Shared" and (not split_people or str(split_people) in ("0", "1")):
-        split_people = 2
-    elif expense_type != "Shared":
-        split_people = 1
+    debit = float(_row_val(tx, "debit") or 0)
+    credit = float(_row_val(tx, "credit") or 0)
+    amt = debit if debit > 0 else credit
 
-    try:
-        split_ratio = split_ratio_from_people(split_people)
-    except ValueError as exc:
-        return {"error": str(exc)}
+    my_share_raw = args.get("my_share")
+    my_share = None
+    if my_share_raw not in (None, ""):
+        try:
+            my_share = Decimal(str(my_share_raw)).quantize(Decimal("0.01"))
+            expense_type = "Shared"
+            if amt > 0:
+                split_ratio = my_share / Decimal(str(amt))
+            else:
+                split_ratio = Decimal("1")
+        except Exception:
+            pass
+    else:
+        split_people = args.get("split_people")
+        if expense_type == "Shared" and (not split_people or str(split_people) in ("0", "1")):
+            split_people = 2
+        elif expense_type != "Shared":
+            split_people = 1
+
+        try:
+            split_ratio = split_ratio_from_people(split_people)
+        except ValueError as exc:
+            return {"error": str(exc)}
 
     learn = bool(args.get("learn", False))
     notes = str(args.get("notes") or "").strip() or None
 
-    debit = float(_row_val(tx, "debit") or 0)
-    credit = float(_row_val(tx, "credit") or 0)
-    amt = debit if debit > 0 else credit
     merch = _row_val(tx, "merchant_display") or _row_val(tx, "description")
     txn_date = _row_val(tx, "txn_date")
 
@@ -871,13 +982,20 @@ def _propose_categorize(conn, username: str, args: dict[str, Any]) -> dict[str, 
         "notes": notes,
         "learn": learn,
         "shared_with": shared_with,
+        "my_share": float(my_share) if my_share is not None else None,
         "merchant": merch,
         "amount": amt,
         "date": txn_date,
     }
     token = pending_store.issue(username, "review_transaction", payload)
 
-    split_txt = f" (Split 1/{split_people})" if expense_type == "Shared" else ""
+    if expense_type == "Shared":
+        if my_share is not None:
+            split_txt = f" (My share ₹{my_share:,.2f})"
+        else:
+            split_txt = f" (Split 1/{split_people})"
+    else:
+        split_txt = ""
     partner_txt = f" with {shared_with}" if shared_with else ""
     learn_txt = " · Rule remembered" if learn else ""
 
@@ -908,39 +1026,28 @@ def _propose_edit_classification(conn, username: str, args: dict[str, Any]) -> d
                 """,
                 (tid,),
             ).fetchone()
-        except (TypeError, ValueError):
-            return {"error": f"Invalid transaction id {tid}"}
-    elif query:
-        rows = conn.execute(
-            """
+        except (ValueError, TypeError):
+            tx = None
+    else:
+        # Search by merchant query, optionally date
+        sql = """
             select t.id, t.txn_date, t.merchant_display, t.description, t.debit, t.credit,
                    c.category as current_cat, c.expense_type as current_type, c.notes
             from transactions t
             join classifications c on c.transaction_id = t.id
-            order by t.txn_date desc, t.id desc
-            limit 150
-            """
-        ).fetchall()
-        matched = []
-        for r in rows:
-            merch = str(_row_val(r, "merchant_display") or "")
-            desc = str(_row_val(r, "description") or "")
-            cat = str(_row_val(r, "current_cat") or "")
-            blob = f"{merch} {desc} {cat}".lower()
-            if query in blob:
-                d_str = str(_row_val(r, "txn_date") or "")
-                if date_hint and date_hint not in d_str:
-                    continue
-                matched.append(r)
-        if not matched:
-            return {"error": f"Could not find any transaction matching {query!r}" + (f" on {date_hint}" if date_hint else "")}
-        tx = matched[0]
-        tid = _row_val(tx, "id")
-    else:
-        return {"error": "Either transaction_id or search query is required"}
+            where (lower(t.merchant_display) like ? or lower(t.description) like ?)
+        """
+        params: list[Any] = [f"%{query}%", f"%{query}%"]
+        if date_hint:
+            sql += " and t.txn_date = ?"
+            params.append(date_hint)
+        sql += " order by t.txn_date desc limit 1"
+        tx = conn.execute(sql, params).fetchone()
 
     if not tx:
-        return {"error": f"Transaction #{tid} not found"}
+        return {"error": f"No transaction found matching '{query or tid}'"}
+
+    tid = int(_row_val(tx, "id"))
 
     cat_map = {c.lower(): c for c in CATEGORIES}
     new_cat = cat_map.get(str(args.get("new_category") or _row_val(tx, "current_cat") or "Other").strip().lower(), "Other")
@@ -952,23 +1059,37 @@ def _propose_edit_classification(conn, username: str, args: dict[str, Any]) -> d
     if shared_with:
         new_type = "Shared"
 
-    split_people = args.get("split_people")
-    if new_type == "Shared" and (not split_people or str(split_people) in ("0", "1")):
-        split_people = 2
-    elif new_type != "Shared":
-        split_people = 1
+    debit = float(_row_val(tx, "debit") or 0)
+    credit = float(_row_val(tx, "credit") or 0)
+    amt = debit if debit > 0 else credit
 
-    try:
-        split_ratio = split_ratio_from_people(split_people)
-    except ValueError as exc:
-        return {"error": str(exc)}
+    my_share_raw = args.get("my_share")
+    my_share = None
+    if my_share_raw not in (None, ""):
+        try:
+            my_share = Decimal(str(my_share_raw)).quantize(Decimal("0.01"))
+            new_type = "Shared"
+            if amt > 0:
+                split_ratio = my_share / Decimal(str(amt))
+            else:
+                split_ratio = Decimal("1")
+        except Exception:
+            pass
+    else:
+        split_people = args.get("split_people")
+        if new_type == "Shared" and (not split_people or str(split_people) in ("0", "1")):
+            split_people = 2
+        elif new_type != "Shared":
+            split_people = 1
+
+        try:
+            split_ratio = split_ratio_from_people(split_people)
+        except ValueError as exc:
+            return {"error": str(exc)}
 
     learn = bool(args.get("learn", False))
     notes = str(args.get("notes") or _row_val(tx, "notes") or "").strip() or None
 
-    debit = float(_row_val(tx, "debit") or 0)
-    credit = float(_row_val(tx, "credit") or 0)
-    amt = debit if debit > 0 else credit
     merch = _row_val(tx, "merchant_display") or _row_val(tx, "description")
     txn_date = _row_val(tx, "txn_date")
     curr_cat = _row_val(tx, "current_cat") or "Uncategorized"
@@ -981,13 +1102,20 @@ def _propose_edit_classification(conn, username: str, args: dict[str, Any]) -> d
         "notes": notes,
         "learn": learn,
         "shared_with": shared_with,
+        "my_share": float(my_share) if my_share is not None else None,
         "merchant": merch,
         "amount": amt,
         "date": txn_date,
     }
     token = pending_store.issue(username, "edit_classification", payload)
 
-    split_txt = f" (Split 1/{split_people})" if new_type == "Shared" else ""
+    if new_type == "Shared":
+        if my_share is not None:
+            split_txt = f" (My share ₹{my_share:,.2f})"
+        else:
+            split_txt = f" (Split 1/{split_people})"
+    else:
+        split_txt = ""
     partner_txt = f" with {shared_with}" if shared_with else ""
     learn_txt = " · Rule remembered" if learn else ""
 
@@ -1006,3 +1134,160 @@ def _row_val(row, key: str):
     if isinstance(row, dict):
         return row.get(key)
     return None
+
+
+def _categorize_transactions(conn, username: str, args: dict[str, Any]) -> dict[str, Any]:
+    raw_items = args.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        if args.get("category") or args.get("transaction_id") or args.get("query"):
+            raw_items = [args]
+        else:
+            return {"error": "items list or category required", "ok": False}
+
+    cat_map = {c.lower(): c for c in CATEGORIES}
+    exp_map = {e.lower(): e for e in EXPENSE_TYPES}
+
+    applied = []
+    errors = []
+
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw_tid = item.get("transaction_id")
+        query = str(item.get("query") or "").strip().lower()
+        tx = None
+
+        if raw_tid:
+            try:
+                tid = int(raw_tid)
+                tx = conn.execute(
+                    """
+                    select t.id, t.txn_date, t.merchant_display, t.description, t.debit, t.credit,
+                           c.category as current_cat, c.expense_type as current_type, c.status
+                    from transactions t
+                    join classifications c on c.transaction_id = t.id
+                    where t.id = ?
+                    """,
+                    (tid,),
+                ).fetchone()
+            except (ValueError, TypeError):
+                tx = None
+        elif query:
+            sql = """
+                select t.id, t.txn_date, t.merchant_display, t.description, t.debit, t.credit,
+                       c.category as current_cat, c.expense_type as current_type, c.status
+                from transactions t
+                join classifications c on c.transaction_id = t.id
+                where (lower(t.merchant_display) like ? or lower(t.description) like ?)
+                order by case when c.status = 'needs_review' then 0 else 1 end, t.txn_date desc limit 1
+            """
+            tx = conn.execute(sql, (f"%{query}%", f"%{query}%")).fetchone()
+
+        if not tx:
+            target_name = f"#{raw_tid}" if raw_tid else repr(query)
+            errors.append(f"Transaction {target_name} not found")
+            continue
+
+        tid = int(_row_val(tx, "id"))
+        category = cat_map.get(str(item.get("category") or _row_val(tx, "current_cat") or "Other").strip().lower(), "Other")
+        expense_type = exp_map.get(str(item.get("expense_type") or _row_val(tx, "current_type") or "Personal").strip().lower(), "Personal")
+
+        shared_with = str(item.get("shared_with") or "").strip() or None
+        if shared_with:
+            expense_type = "Shared"
+
+        debit = float(_row_val(tx, "debit") or 0)
+        credit = float(_row_val(tx, "credit") or 0)
+        amt = debit if debit > 0 else credit
+
+        my_share_raw = item.get("my_share")
+        my_share = None
+        if my_share_raw not in (None, ""):
+            try:
+                my_share = Decimal(str(my_share_raw)).quantize(Decimal("0.01"))
+                expense_type = "Shared"
+                if amt > 0:
+                    split_ratio = my_share / Decimal(str(amt))
+                else:
+                    split_ratio = Decimal("1")
+            except Exception:
+                pass
+        else:
+            split_people = item.get("split_people")
+            if expense_type == "Shared" and (not split_people or str(split_people) in ("0", "1")):
+                split_people = 2
+            elif expense_type != "Shared":
+                split_people = 1
+
+            try:
+                split_ratio = split_ratio_from_people(split_people)
+            except ValueError as exc:
+                errors.append(f"#{tid}: {str(exc)}")
+                continue
+
+        learn = bool(item.get("learn", True))
+        notes = str(item.get("notes") or "").strip() or None
+
+        review_transaction(
+            conn,
+            transaction_id=tid,
+            category=category,
+            expense_type=expense_type,
+            split_ratio=split_ratio,
+            notes=notes,
+            learn=learn,
+            shared_with=shared_with,
+            my_share=my_share,
+        )
+
+        merch = _row_val(tx, "merchant_display") or _row_val(tx, "description")
+        applied.append({
+            "transaction_id": tid,
+            "merchant": merch,
+            "category": category,
+            "expense_type": expense_type,
+            "amount": amt,
+            "date": _row_val(tx, "txn_date"),
+        })
+
+    if not applied:
+        return {"ok": False, "error": "; ".join(errors) if errors else "No transactions updated", "applied": []}
+
+    summary_bits = [f"{a['merchant']} (₹{a['amount']:,.0f}) → {a['category']}" for a in applied]
+    answer = f"Successfully categorized {len(applied)} transaction(s): " + "; ".join(summary_bits) + "."
+    if errors:
+        answer += f" (Note: {'; '.join(errors)})"
+
+    return {
+        "ok": True,
+        "count": len(applied),
+        "categorized": applied,
+        "errors": errors,
+        "answer": answer,
+    }
+
+
+def _confirm_pending_action(conn, username: str, args: dict[str, Any]) -> dict[str, Any]:
+    token = str(args.get("token") or "").strip()
+    if token:
+        item = pending_store.take(token, username)
+        items = [item] if item else []
+    else:
+        items = pending_store.take_all(username)
+
+    if not items:
+        return {"ok": False, "answer": "No pending confirmation cards to confirm."}
+
+    results = []
+    for it in items:
+        res = execute_pending(conn, username, it)
+        results.append(res)
+
+    success_count = sum(1 for r in results if r.get("ok"))
+    return {
+        "ok": success_count > 0,
+        "count": len(results),
+        "success_count": success_count,
+        "results": results,
+        "answer": f"Confirmed and saved {success_count} pending transaction change(s) to dashboard.",
+    }

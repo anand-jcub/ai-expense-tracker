@@ -10,9 +10,7 @@ export const features = [
   { id: 'home', title: 'Home', nav: true, enabled: true, Screen: HomeScreen },
   { id: 'ask', title: 'Ask', nav: true, enabled: true, Screen: AskScreen },
   { id: 'add', title: 'Add', nav: true, enabled: true, Screen: AddScreen },
-  { id: 'people', title: 'People', nav: false, enabled: false, Screen: null },
   { id: 'graphs', title: 'Graphs', nav: false, enabled: false, Screen: null },
-  { id: 'ledger', title: 'Ledger', nav: false, enabled: false, Screen: null },
 ]
 
 export function navFeatures() {

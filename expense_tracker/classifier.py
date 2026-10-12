@@ -15,32 +15,33 @@ DEFAULT_SPLIT_RATIO = Decimal("1.00")
 # ---------------------------------------------------------------------------
 CATEGORY_SEEDS: dict[str, tuple[str, str]] = {
     # ── Groceries / supermarket ─────────────────────────────────────────────
-    "blinkit":      ("Groceries", "Personal"),
-    "jiomart":      ("Groceries", "Personal"),
-    "jiomartg":     ("Groceries", "Personal"),
-    "bigbasket":    ("Groceries", "Personal"),
-    "bbdaily":      ("Groceries", "Personal"),
-    "bbnow":        ("Groceries", "Personal"),
-    "bb now":       ("Groceries", "Personal"),
-    "dunzo":        ("Groceries", "Personal"),
-    "zepto":        ("Groceries", "Personal"),
-    "dmart":        ("Groceries", "Personal"),
-    "reliance fresh": ("Groceries", "Personal"),
-    "innovati":     ("Groceries", "Personal"),   # Innovative Supermarket
-    "lulu":         ("Groceries", "Personal"),
-    "more supermarket": ("Groceries", "Personal"),
+    "blinkit":      ("Groceries", "Shared"),
+    "jiomart":      ("Groceries", "Shared"),
+    "jiomartg":     ("Groceries", "Shared"),
+    "bigbasket":    ("Groceries", "Shared"),
+    "bbdaily":      ("Groceries", "Shared"),
+    "bbnow":        ("Groceries", "Shared"),
+    "bb now":       ("Groceries", "Shared"),
+    "dunzo":        ("Groceries", "Shared"),
+    "zepto":        ("Groceries", "Shared"),
+    "dmart":        ("Groceries", "Shared"),
+    "reliance fresh": ("Groceries", "Shared"),
+    "innovati":     ("Groceries", "Shared"),   # Innovative Supermarket
+    "lulu":         ("Groceries", "Shared"),
+    "more supermarket": ("Groceries", "Shared"),
+    "supplyco":     ("Groceries", "Shared"),
     # ── Food / restaurants ──────────────────────────────────────────────────
-    "swiggy":       ("Food", "Personal"),
-    "zomato":       ("Food", "Personal"),
-    "zomato ltd":   ("Food", "Personal"),
-    "wah chaii":    ("Food", "Personal"),
-    "chai":         ("Food", "Personal"),
-    "hotel":        ("Food", "Personal"),
-    "restaurant":   ("Food", "Personal"),
-    "cafe":         ("Food", "Personal"),
-    "bakery":       ("Food", "Personal"),
-    "althar":       ("Food", "Personal"),        # Althar Tea
-    "madras":       ("Food", "Personal"),        # Madras Cafe / Madras Saravana etc.
+    "swiggy":       ("Food", "Shared"),
+    "zomato":       ("Food", "Shared"),
+    "zomato ltd":   ("Food", "Shared"),
+    "wah chaii":    ("Food", "Shared"),
+    "chai":         ("Food", "Shared"),
+    "hotel":        ("Food", "Shared"),
+    "restaurant":   ("Food", "Shared"),
+    "cafe":         ("Food", "Shared"),
+    "bakery":       ("Food", "Shared"),
+    "althar":       ("Food", "Shared"),        # Althar Tea
+    "madras":       ("Food", "Shared"),        # Madras Cafe / Madras Saravana etc.
     # ── Transport ───────────────────────────────────────────────────────────
     "uber":         ("Transport", "Personal"),
     "ola":          ("Transport", "Personal"),
@@ -94,6 +95,7 @@ CATEGORY_SEEDS: dict[str, tuple[str, str]] = {
     "clinic":       ("Health", "Personal"),
     "hospital":     ("Health", "Personal"),
     "lab":          ("Health", "Personal"),
+    "vayalum":      ("Health", "Personal"),
     # ── Shopping / e-commerce ───────────────────────────────────────────────
     "amazon":       ("Shopping", "Personal"),
     "flipkart":     ("Shopping", "Personal"),
@@ -143,6 +145,13 @@ STOP_TOKENS = {
     "recur",
     "manda",
     "payme",
+    "wdl",
+    "tfr",
+    "dep",
+    "at",
+    "rem",
+    "nach",
+    "achdr",
 }
 
 # 4-letter IFSC bank codes that appear in UPI descriptions (position after payee name)
@@ -161,17 +170,21 @@ _UPI_BRAND_MAP: dict[str, str] = {
     "INNOVATI": "Innovative",
     "BBNOW":    "BB Now",
     "BIGBASKET": "BigBasket",
+    "BIGBASKE T": "BigBasket",
     "JIOMART":  "JioMart",
     "JIOMARTG": "JioMart",
     "BLINKIT":  "Blinkit",
     "ZEPTO":    "Zepto",
     "DMART":    "D-Mart",
+    "SUPPLYCO": "Supplyco",
     # Food
     "ZOMATO":   "Zomato",
     "ZOMATO L": "Zomato",
     "ZOMATO LTD": "Zomato",
+    "ZOMATO M": "Zomato",
     "SWIGGY":   "Swiggy",
     "SWIGGYIN": "Swiggy",
+    "SWIGGY LTD": "Swiggy",
     # Transport
     "UBER":     "Uber",
     "RAPIDO":   "Rapido",
@@ -181,6 +194,9 @@ _UPI_BRAND_MAP: dict[str, str] = {
     "AMAZON":   "Amazon",
     "FLIPKART": "Flipkart",
     "MYNTRA":   "Myntra",
+    # Entertainment
+    "BIGTREE":  "BookMyShow",
+    "JIOSTAR":  "JioStar",
     # Finance / Wallets
     "ONE97 CO": "Paytm",
     "ONE97":    "Paytm",
@@ -264,16 +280,73 @@ def _is_upi_handle(token: str) -> bool:
     return False
 
 
+_UPI_APP_MARKERS = (
+    ("gpay", "GPay"),
+    ("googlepay", "GPay"),
+    ("okaxis", "GPay"),
+    ("okhdfcbank", "GPay"),
+    ("oksbi", "GPay"),
+    ("okicici", "GPay"),
+    ("phonepe", "PhonePe"),
+    ("paytm", "Paytm"),
+    ("bhim", "BHIM"),
+    ("credclub", "CRED"),
+    ("amazonpay", "Amazon Pay"),
+    ("whatsapp", "WhatsApp"),
+)
+
+
+def upi_paying_app(raw: str) -> str | None:
+    """App named in the statement (GPay, Paytm, BHIM), if the bank wrote it.
+
+    Most SBI lines only say \"UPI\" and do not record which app you used.
+    """
+    text = re.sub(r"[\r\n]+", " ", raw or "")
+    match = re.search(r"(?i)\bupi/(?:dr|cr)/", text)
+    if not match:
+        return None
+    parts = [re.sub(r"\s+", "", p).lower() for p in text[match.start() :].split("/")]
+    blob = " ".join(parts[5:7]) if len(parts) > 5 else ""
+    if not blob:
+        return None
+    for marker, label in _UPI_APP_MARKERS:
+        if marker in blob:
+            return label
+    return None
+
+
+def extract_upi_vpa(raw: str) -> str | None:
+    """Return the UPI handle used to pay (the VPA field), if the line is UPI.
+
+    SBI layout: UPI/DR/<ref>/<payee>/<bank>/<vpa>/...
+    """
+    text = re.sub(r"[\r\n]+", " ", raw or "").strip()
+    match = re.search(r"(?i)\bupi/(?:dr|cr)/", text)
+    if not match:
+        return None
+    parts = [p.strip() for p in text[match.start() :].split("/")]
+    if len(parts) < 6:
+        return None
+    vpa = re.sub(r"\s+", "", parts[5]).strip(" .")
+    if len(vpa) < 3:
+        return None
+    if vpa.lower() in {"upi", "nore", "noref", "na", "none"}:
+        return None
+    return vpa
+
+
 def _extract_upi_payee(raw: str) -> str | None:
     """Parse a UPI/DR/.../PAYEE/BANKCODE/vpa/... description and return the
     clean payee name, or None if not a recognised UPI format."""
     # Normalise: collapse whitespace inside segments that the bank breaks
     text = re.sub(r"[\r\n]+", " ", raw).strip()
-    # Quick gate — must start with UPI/
-    if not re.match(r"(?i)^upi/", text):
+    # Search for UPI/DR/ or UPI/CR/ anywhere in the description
+    match = re.search(r"(?i)\bupi/(?:dr|cr)/", text)
+    if not match:
         return None
+    upi_text = text[match.start() :]
     # Split on /
-    parts = [p.strip() for p in text.split("/")]
+    parts = [p.strip() for p in upi_text.split("/")]
     # Expected: UPI, DR|CR, refno, PAYEE NAME, BANKCODE, vpa-handle, [suffix...]
     if len(parts) < 4:
         return None
@@ -283,6 +356,8 @@ def _extract_upi_payee(raw: str) -> str | None:
     payee_raw = parts[3].strip()
     # Clean the payee: remove leading digits/special chars
     payee_clean = re.sub(r"^[\d\s]+", "", payee_raw).strip()
+    # Remove trailing punctuation/dots like 'Shajeer .' -> 'Shajeer'
+    payee_clean = re.sub(r"[\s\.\-]+$", "", payee_clean).strip()
     if not payee_clean:
         return None
 
@@ -328,7 +403,7 @@ def normalize_merchant(value: str) -> str:
     return " ".join(useful[:4]).strip()
 
 
-def display_merchant(description: str, fallback: str = "Unknown merchant") -> str:
+def display_merchant(description: str, fallback: str = "No description") -> str:
     """Return a human-readable merchant name for a transaction description."""
     # Fast path: UPI with a recognisable payee
     upi_payee = _extract_upi_payee(description)
@@ -346,6 +421,13 @@ def seed_match(merchant_key: str) -> tuple[str, str] | None:
         if keyword in merchant_key:
             return classification
     return None
+
+
+def _rule_field(row, key: str, index: int):
+    try:
+        return row[key]
+    except (TypeError, IndexError, KeyError):
+        return row[index]
 
 
 def find_merchant_rule(conn, merchant_key: str):
@@ -370,7 +452,8 @@ def find_merchant_rule(conn, merchant_key: str):
         """
     ).fetchall()
     for row in rows:
-        score = rule_match_score(merchant_key, row["merchant_key"])
+        mkey = _rule_field(row, "merchant_key", 1)
+        score = rule_match_score(merchant_key, mkey)
         if score > best_score:
             best = row
             best_score = score
@@ -381,15 +464,16 @@ def find_merchant_rule(conn, merchant_key: str):
 def classify_transaction(conn, merchant_key: str) -> Classification:
     row, match_score = find_merchant_rule(conn, merchant_key)
     if row:
-        confidence = Decimal(str(row["confidence"])) * match_score
+        conf_val = _rule_field(row, "confidence", 5)
+        confidence = Decimal(str(conf_val)) * match_score
         status = "auto" if match_score == Decimal("1.00") else "needs_review"
         return Classification(
-            category=row["category"],
-            expense_type=row["expense_type"],
-            split_ratio=Decimal(str(row["split_ratio"])),
+            category=_rule_field(row, "category", 2),
+            expense_type=_rule_field(row, "expense_type", 3),
+            split_ratio=Decimal(str(_rule_field(row, "split_ratio", 4))),
             status=status,
             confidence=confidence.quantize(Decimal("0.01")),
-            rule_id=row["id"],
+            rule_id=_rule_field(row, "id", 0),
         )
 
     seeded = seed_match(merchant_key)

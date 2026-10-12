@@ -24,6 +24,7 @@ CATEGORIES = [
     "Transfer",
     "Loan",
     "Family",
+    "Friends",
     "Other",
 ]
 EXPENSE_TYPES = ["Personal", "Business", "Shared", "Transfer", "Loan", "Other"]
@@ -55,18 +56,36 @@ def people_from_split_ratio(value) -> int:
     return 1
 
 
-def review_people_value(row) -> int:
+def review_people_value(row) -> int | str:
     et = row["expense_type"] if (hasattr(row, "keys") and "expense_type" in row.keys()) or (isinstance(row, dict) and "expense_type" in row) else None
     if et == "Shared":
         sr = row["split_ratio"] if (hasattr(row, "keys") and "split_ratio" in row.keys()) or (isinstance(row, dict) and "split_ratio" in row) else None
-        people = people_from_split_ratio(sr)
-        return people if people > 1 else 2
+        try:
+            ratio = Decimal(str(sr or "1"))
+            if ratio > 0:
+                people = Decimal("1") / ratio
+                nearest = people.to_integral_value()
+                if abs(people - nearest) <= Decimal("0.05") and nearest >= 1:
+                    return int(nearest) if nearest > 1 else 2
+        except Exception:
+            return 2
+        return ""
     return 2
 
 
 def split_display(value) -> str:
-    people = people_from_split_ratio(value)
-    return f"1/{people}"
+    try:
+        ratio = Decimal(str(value or "1"))
+    except Exception:
+        ratio = Decimal("1")
+    if ratio <= 0:
+        return "1/1"
+    people = Decimal("1") / ratio
+    nearest = people.to_integral_value()
+    if abs(people - nearest) <= Decimal("0.05") and nearest >= 1:
+        return f"1/{int(nearest)}"
+    pct = (ratio * 100).quantize(Decimal("1"))
+    return f"Custom ({pct}%)"
 
 
 def sort_review_rows(rows, direction: str):
@@ -173,6 +192,18 @@ def _row_get(row, key: str, default=0):
     return default
 
 
+def is_review_debit(row) -> bool:
+    """A review task is an unclassified debit. Credits are not reviewed."""
+    status = _row_get(row, "status", "")
+    if str(status or "") != "needs_review":
+        return False
+    try:
+        debit = float(_row_get(row, "debit", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return debit > 0
+
+
 def credit_debit_totals(rows) -> tuple[Decimal, Decimal]:
     credit_total = sum(
         max(Decimal("0"), Decimal(str(row["credit"] or 0)) - Decimal(str(_row_get(row, "credit_offset", 0))))
@@ -213,6 +244,98 @@ def default_dashboard_period(
     if start > end:
         return earliest or start, latest or end
     return start, end
+
+
+def get_month_nav(
+    min_date_str: str,
+    max_date_str: str,
+    current_start: str,
+    current_end: str,
+    exclude_business: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, str] | None, dict[str, str] | None]:
+    """Calculate month pills and previous/next month navigation for the dashboard period filter.
+
+    Returns:
+        months: list of {'start': 'YYYY-MM-01', 'end': 'YYYY-MM-DD', 'label': "Mon 'YY", 'active': bool, 'url': str}
+        prev_month: {'start': ..., 'end': ..., 'label': ..., 'url': ...} or None if at or before min_date
+        next_month: {'start': ..., 'end': ..., 'label': ..., 'url': ...} or None if at or after max_date
+    """
+    import calendar
+
+    if not min_date_str or not max_date_str:
+        return [], None, None
+    try:
+        d_min = date.fromisoformat(str(min_date_str)[:10])
+        d_max = date.fromisoformat(str(max_date_str)[:10])
+    except Exception:
+        return [], None, None
+
+    if d_min > d_max:
+        return [], None, None
+
+    ex_param = "&exclude_business=1" if exclude_business else "&exclude_business=0"
+    cur_s = str(current_start or "")[:10]
+    cur_e = str(current_end or "")[:10]
+
+    months: list[dict[str, Any]] = []
+    y, m = d_min.year, d_min.month
+    while (y, m) <= (d_max.year, d_max.month):
+        _, last_day = calendar.monthrange(y, m)
+        m_start = f"{y:04d}-{m:02d}-01"
+        m_end = f"{y:04d}-{m:02d}-{last_day:02d}"
+        label = date(y, m, 1).strftime("%b '%y")
+        is_active = (cur_s[:7] == f"{y:04d}-{m:02d}" and cur_e[:7] == f"{y:04d}-{m:02d}")
+        url = f"/?start_date={m_start}&end_date={m_end}{ex_param}"
+        months.append({
+            "start": m_start,
+            "end": m_end,
+            "label": label,
+            "active": is_active,
+            "url": url,
+        })
+        if m == 12:
+            y += 1
+            m = 1
+        else:
+            m += 1
+
+    try:
+        cur_d = date.fromisoformat(cur_s)
+        cur_y, cur_m = cur_d.year, cur_d.month
+    except Exception:
+        cur_y, cur_m = d_max.year, d_max.month
+
+    # Prev month
+    if cur_m == 1:
+        prev_y, prev_m = cur_y - 1, 12
+    else:
+        prev_y, prev_m = cur_y, cur_m - 1
+    _, p_last = calendar.monthrange(prev_y, prev_m)
+    p_start = f"{prev_y:04d}-{prev_m:02d}-01"
+    p_end = f"{prev_y:04d}-{prev_m:02d}-{p_last:02d}"
+    prev_info = {
+        "start": p_start,
+        "end": p_end,
+        "label": date(prev_y, prev_m, 1).strftime("%b '%y"),
+        "url": f"/?start_date={p_start}&end_date={p_end}{ex_param}",
+    } if (prev_y, prev_m) >= (d_min.year, d_min.month) else None
+
+    # Next month
+    if cur_m == 12:
+        next_y, next_m = cur_y + 1, 1
+    else:
+        next_y, next_m = cur_y, cur_m + 1
+    _, n_last = calendar.monthrange(next_y, next_m)
+    n_start = f"{next_y:04d}-{next_m:02d}-01"
+    n_end = f"{next_y:04d}-{next_m:02d}-{n_last:02d}"
+    next_info = {
+        "start": n_start,
+        "end": n_end,
+        "label": date(next_y, next_m, 1).strftime("%b '%y"),
+        "url": f"/?start_date={n_start}&end_date={n_end}{ex_param}",
+    } if (next_y, next_m) <= (d_max.year, d_max.month) else None
+
+    return months, prev_info, next_info
 
 
 def filter_dashboard_rows(rows, start_date: str = "", end_date: str = "", exclude_business: bool = False):
@@ -390,6 +513,7 @@ def dashboard_summary_payload(
         ]
     else:
         period_pending = pending_all
+    period_pending = [p for p in period_pending if is_review_debit(p)]
 
     return {
         "start_date": start or None,
@@ -462,7 +586,15 @@ def partner_share_for_row(row) -> Decimal:
         ratio = Decimal(str(row["split_ratio"] if "split_ratio" in row.keys() else 1))
     except Exception:
         ratio = Decimal(str((row.get("split_ratio") if isinstance(row, dict) else 1) or 1))
-    if ratio < 1:
+
+    try:
+        row_my_share = Decimal(str(row["my_share"] if "my_share" in row.keys() else row.get("my_share", None)))
+    except Exception:
+        row_my_share = None
+
+    if offset == Decimal("0") and row_my_share is not None and Decimal("0") <= row_my_share <= base:
+        my = row_my_share.quantize(Decimal("0.01"))
+    elif ratio < 1:
         my = (base * ratio).quantize(Decimal("0.01"))
     else:
         my = base.quantize(Decimal("0.01"))
@@ -543,22 +675,8 @@ def compute_partner_balances(conn, current_user: str, all_users: list[str] | Non
 
 
 def get_household_balances(conn, current_user: str) -> list[dict]:
-    """Khata nets for contacts with non-zero balance."""
-    try:
-        from .contacts import get_all_balances
-
-        return [
-            {
-                "username": item["contact"]["name"],
-                "they_owe_you": item["balance"]["they_owe_you"],
-                "you_owe_them": item["balance"]["you_owe_them"],
-                "net": item["balance"]["net"],
-            }
-            for item in get_all_balances(conn)
-            if item["balance"]["net"] != 0
-        ]
-    except Exception:
-        return []
+    """Khata nets (retired)."""
+    return []
 
 
 def credits_by_category(rows) -> list[tuple[str, Decimal]]:

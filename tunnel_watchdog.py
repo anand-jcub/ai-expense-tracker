@@ -14,6 +14,7 @@ os.chdir(ROOT)
 CREATE_NO_WINDOW = 0x08000000
 LOG = ROOT / "tunnel-watchdog.log"
 URL_FILE = ROOT / "tunnel.url"
+REGISTERED_URL_FILE = ROOT / "tunnel-registered.url"
 PID_FILE = ROOT / "tunnel.pid"
 TUNNEL_LOG = ROOT / "tunnel.log"
 LOCAL = "http://127.0.0.1:8765/api/health"
@@ -148,11 +149,22 @@ def ensure_tunnel() -> None:
         log("no trycloudflare URL")
         return
     URL_FILE.write_text(found + "\n", encoding="ascii")
+    # Only call Cloudflare if the URL actually changed since last registration
+    last_registered = ""
+    if REGISTERED_URL_FILE.is_file():
+        try:
+            last_registered = REGISTERED_URL_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    if found == last_registered:
+        log("tunnel URL unchanged (" + found + "), skipping Cloudflare register")
+        return
     try:
         from expense_tracker.cloud_sync import _read_deploy_cfg, register_live
 
         cfg = _read_deploy_cfg()
         register_live(cfg.get("username") or "anand", cfg.get("url") or "", cfg.get("key") or "")
+        REGISTERED_URL_FILE.write_text(found, encoding="ascii")
         log("registered " + found)
     except Exception as exc:
         log("register-live failed: " + str(exc))

@@ -82,8 +82,10 @@ GET /api/health
 |-------|---------|---------|
 | `start_date` / `start` | export + transactions | Inclusive `YYYY-MM-DD` |
 | `end_date` / `end` | export + transactions | Inclusive `YYYY-MM-DD` |
+| `category` | transactions | Exact category name (or `Uncategorized`) |
+| `exclude_business` | transactions | `1` (default when category provided) or `0` |
 | `q` / `query` | export + transactions | Substring on merchant, description, category, notes |
-| `limit` | export + transactions | Cap rows (export max 5000; transactions max 500) |
+| `limit` | export + transactions | Cap rows (export max 5000; transactions default 50 unless category provided or `limit=all`) |
 
 Example (cloud AI / scripts over tunnel):
 

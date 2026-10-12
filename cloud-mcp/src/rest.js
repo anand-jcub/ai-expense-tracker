@@ -30,12 +30,162 @@ export async function handleRest(request, env) {
     });
   }
 
+  if (path.startsWith('/api/push/')) {
+    let body;
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      try {
+        body = await request.json();
+      } catch {
+        body = {};
+      }
+    }
+    const liveResp = await tryLive(request, env, path, body);
+    if (liveResp) return liveResp;
+    return json({ error: 'Desktop app not reachable to sync push notifications. Ensure your PC is running.' }, 503);
+  }
+
   if (path === '/api/dashboard/summary' && request.method === 'GET') {
     const liveResp = await tryLive(request, env, path);
     if (liveResp) return liveResp;
     if (!glance) return json({ error: 'No snapshot yet. Run sync-cloud.cmd on the PC.' }, 404);
+
+    const startDate = (url.searchParams.get('start_date') || url.searchParams.get('start') || '').trim();
+    const endDate = (url.searchParams.get('end_date') || url.searchParams.get('end') || '').trim();
+    const excludeBusiness = url.searchParams.get('exclude_business') !== '0';
+
+    const defaultDash = glance.dashboard || {};
+    if ((!startDate && !endDate) || (startDate === defaultDash.start_date && endDate === defaultDash.end_date)) {
+      return json({
+        ...defaultDash,
+        mode: 'snapshot',
+        syncedAt: glance.syncedAt,
+      });
+    }
+
+    const txns = glance.transactions || [];
+    const filtered = txns.filter((t) => {
+      const d = String(t.txn_date || '').slice(0, 10);
+      if (startDate && d < startDate) return false;
+      if (endDate && d > endDate) return false;
+      const rowCat = String(t.category || '').trim().toLowerCase();
+      const rowType = String(t.expense_type || '').trim().toLowerCase();
+      if (excludeBusiness && (rowCat === 'business' || rowType === 'business')) return false;
+      return true;
+    });
+
+    let periodDebits = 0;
+    let periodCredits = 0;
+    let periodExpenseShare = 0;
+    const catMap = {};
+
+    for (const t of filtered) {
+      const debit = Number(t.debit) || 0;
+      const credit = Number(t.credit) || 0;
+      periodDebits += debit;
+      periodCredits += credit;
+      if (debit > 0) {
+        const expType = String(t.expense_type || '').trim().toLowerCase();
+        if (expType === 'transfer' || expType === 'loan') continue;
+        const myShare = t.my_share !== null && t.my_share !== undefined ? Number(t.my_share) : debit;
+        const amt = Math.min(myShare, debit);
+        periodExpenseShare += amt;
+        const cat = t.category || 'Uncategorized';
+        catMap[cat] = (catMap[cat] || 0) + amt;
+      }
+    }
+
+    const byCategory = Object.entries(catMap)
+      .map(([category, amount]) => ({ category, amount: Math.round(amount * 100) / 100 }))
+      .sort((a, b) => b.amount - a.amount);
+
     return json({
-      ...(glance.dashboard || {}),
+      start_date: startDate || null,
+      end_date: endDate || null,
+      exclude_business: excludeBusiness,
+      period_credits: Math.round(periodCredits * 100) / 100,
+      period_debits: Math.round(periodDebits * 100) / 100,
+      period_expense_share: Math.round(periodExpenseShare * 100) / 100,
+      transaction_count: filtered.length,
+      needs_review_count: filtered.filter((t) => t.status !== 'reviewed').length,
+      by_category: byCategory,
+      mode: 'snapshot',
+      syncedAt: glance.syncedAt,
+    });
+  }
+
+  if (path === '/api/transactions' && request.method === 'GET') {
+    const liveResp = await tryLive(request, env, path);
+    if (liveResp) return liveResp;
+    if (!glance) return json({ error: 'No snapshot yet. Run sync-cloud.cmd on the PC.' }, 404);
+
+    const startDate = (url.searchParams.get('start_date') || url.searchParams.get('start') || '').trim();
+    const endDate = (url.searchParams.get('end_date') || url.searchParams.get('end') || '').trim();
+    const category = (url.searchParams.get('category') || '').trim();
+    const excludeBusiness = url.searchParams.get('exclude_business') !== '0';
+    const q = (url.searchParams.get('q') || url.searchParams.get('query') || '').trim().toLowerCase();
+    const limitRaw = (url.searchParams.get('limit') || '').trim().toLowerCase();
+
+    let limit = null;
+    if (limitRaw === 'all' || limitRaw === '0' || limitRaw === 'none') {
+      limit = null;
+    } else if (/^\d+$/.test(limitRaw)) {
+      limit = Math.max(1, Math.min(parseInt(limitRaw, 10), 5000));
+    } else if (category) {
+      limit = null;
+    } else {
+      limit = 50;
+    }
+
+    const txns = [...(glance.transactions || [])].reverse();
+    const filtered = [];
+
+    for (const t of txns) {
+      const d = String(t.txn_date || '').slice(0, 10);
+      if (startDate && d < startDate) continue;
+      if (endDate && d > endDate) continue;
+      const rowCat = String(t.category || '').trim();
+      const rowType = String(t.expense_type || '').trim();
+      if (excludeBusiness && (rowCat.toLowerCase() === 'business' || rowType.toLowerCase() === 'business')) {
+        continue;
+      }
+      if (category) {
+        if (category.toLowerCase() === 'uncategorized') {
+          const status = String(t.status || '').toLowerCase();
+          if (rowCat && rowCat.toLowerCase() !== 'uncategorized' && status !== 'needs_review') {
+            continue;
+          }
+        } else if (rowCat.toLowerCase() !== category.toLowerCase()) {
+          continue;
+        }
+        const debit = Number(t.debit) || 0;
+        if (debit <= 0) continue;
+      }
+      if (q) {
+        const blob = [
+          t.merchant_display,
+          t.description,
+          t.category,
+          t.expense_type,
+          t.notes,
+          t.reference,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!blob.includes(q)) continue;
+      }
+      filtered.push(t);
+      if (limit !== null && filtered.length >= limit) break;
+    }
+
+    return json({
+      username: glance.username,
+      count: filtered.length,
+      start_date: startDate || null,
+      end_date: endDate || null,
+      category: category || null,
+      query: q || null,
+      transactions: filtered,
       mode: 'snapshot',
       syncedAt: glance.syncedAt,
     });
@@ -138,19 +288,22 @@ export async function handleRest(request, env) {
     // 2. Optimistically update glance so phone UI updates immediately
     if (glance && env.STORE) {
       if (body.direction !== 'credit') {
-        glance.dashboard = glance.dashboard || {};
-        glance.dashboard.period_expense_share = (Number(glance.dashboard.period_expense_share) || 0) + amt;
-        glance.dashboard.period_debits = (Number(glance.dashboard.period_debits) || 0) + amt;
-        glance.dashboard.transaction_count = (Number(glance.dashboard.transaction_count) || 0) + 1;
+        const isBiz = String(category || '').trim().toLowerCase() === 'business' || String(body.expense_type || '').trim().toLowerCase() === 'business';
+        if (!isBiz) {
+          glance.dashboard = glance.dashboard || {};
+          glance.dashboard.period_expense_share = (Number(glance.dashboard.period_expense_share) || 0) + amt;
+          glance.dashboard.period_debits = (Number(glance.dashboard.period_debits) || 0) + amt;
+          glance.dashboard.transaction_count = (Number(glance.dashboard.transaction_count) || 0) + 1;
 
-        const cats = glance.dashboard.by_category || [];
-        const existingCat = cats.find((c) => String(c.category || '').toLowerCase() === category.toLowerCase());
-        if (existingCat) {
-          existingCat.amount = (Number(existingCat.amount) || 0) + amt;
-        } else {
-          cats.push({ category, amount: amt });
+          const cats = glance.dashboard.by_category || [];
+          const existingCat = cats.find((c) => String(c.category || '').toLowerCase() === category.toLowerCase());
+          if (existingCat) {
+            existingCat.amount = (Number(existingCat.amount) || 0) + amt;
+          } else {
+            cats.push({ category, amount: amt });
+          }
+          glance.dashboard.by_category = cats.sort((a, b) => b.amount - a.amount);
         }
-        glance.dashboard.by_category = cats.sort((a, b) => b.amount - a.amount);
       }
 
       glance.transactions = glance.transactions || [];
@@ -292,17 +445,7 @@ function answerAsk(glance, message) {
     text.match(/(?:balance|khata|owe[sd]?)\s+(?:for|with|to)?\s*(.+?)\??$/i);
   const nameHit = owe || oweAlt;
   if (nameHit) {
-    let name = String(nameHit[1] || '')
-      .replace(/^(does|do|for|with|to)\s+/i, '')
-      .trim()
-      .replace(/[?.]$/, '');
-    if (name && !/^(me|i|who)$/i.test(name)) {
-      const row = findBalance(glance.balances || [], name);
-      if (!row) {
-        return { reply: `No contact matching “${name}”.`, cards: [], source: 'snapshot', matched: true };
-      }
-      return { reply: formatNet(row), cards: [], source: 'snapshot', matched: true, model: 'local' };
-    }
+    return { reply: 'The ledger and contact balances system has been decommissioned.', cards: [], source: 'snapshot', matched: true, model: 'local' };
   }
 
   const spend = text.match(
@@ -310,10 +453,11 @@ function answerAsk(glance, message) {
   );
   if (spend) {
     const dash = glance.dashboard || {};
+    const dashAll = glance.dashboard_all || dash;
     const cat = String(spend[1] || '')
       .replace(/\bthis month\b/i, '')
       .trim();
-    const cats = dash.by_category || [];
+    const cats = (dashAll.by_category && dashAll.by_category.length) ? dashAll.by_category : (dash.by_category || []);
     const match = cat
       ? cats.find((c) => String(c.category || '').toLowerCase() === cat.toLowerCase())
       : null;
@@ -334,15 +478,44 @@ function answerAsk(glance, message) {
   }
 
   if (/who owes|who do i owe|balances?\b/i.test(text)) {
-    const rows = (glance.people || glance.balances || []).filter((b) => Number(b.net) !== 0);
-    if (!rows.length) return { reply: 'No open person balances.', cards: [], source: 'snapshot', matched: true };
-    const bits = rows.slice(0, 8).map((r) => {
-      const net = Number(r.net) || 0;
-      return net > 0
-        ? `${r.contact_name} owes you ₹${fmt(net)}`
-        : `you owe ${r.contact_name} ₹${fmt(Math.abs(net))}`;
+    return { reply: 'No open person balances. The ledger system has been decommissioned.', cards: [], source: 'snapshot', matched: true };
+  }
+
+  const dateHit = parseTargetDate(text);
+  if (dateHit) {
+    const txns = glance.transactions || glance.books?.bank || [];
+    const dateRows = txns.filter((t) => {
+      const d = String(t.txn_date || t.date || '').slice(0, 10);
+      return d === dateHit || d.endsWith(dateHit.slice(4));
     });
-    return { reply: `${bits.join('; ')}.`, cards: [], source: 'snapshot', matched: true };
+    if (dateRows.length > 0) {
+      let totalDebit = 0;
+      let totalCredit = 0;
+      const bits = dateRows.map((t) => {
+        const d = Number(t.debit || 0);
+        const c = Number(t.credit || 0);
+        totalDebit += d;
+        totalCredit += c;
+        const merch = t.merchant_display || t.merchant || t.description || 'Transaction';
+        const typeStr = d > 0 ? `₹${fmt(d)} (debit)` : `₹${fmt(c)} (credit)`;
+        return `• ${merch}: ${typeStr} [${t.category || 'Other'}]`;
+      });
+      return {
+        reply: `On ${dateHit}, you have ${dateRows.length} transaction(s):\n${bits.join('\n')}\nTotal debits: ₹${fmt(totalDebit)}, credits: ₹${fmt(totalCredit)}.`,
+        cards: [],
+        source: 'snapshot',
+        matched: true,
+        model: 'local',
+      };
+    } else {
+      return {
+        reply: `No transactions found for ${dateHit} in your synced records.`,
+        cards: [],
+        source: 'snapshot',
+        matched: true,
+        model: 'local',
+      };
+    }
   }
 
   const booksHit = queryGlanceBooks(glance, text);
@@ -512,48 +685,216 @@ function corsHeaders() {
   };
 }
 
+const MONTH_MAP = {
+  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+};
+
+function parseTargetDate(text) {
+  if (!text) return null;
+  const low = String(text).toLowerCase();
+
+  // Relative dates
+  if (/\btoday\b/i.test(low)) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  if (/\byesterday\b/i.test(low)) {
+    const y = new Date(Date.now() - 86400000);
+    return y.toISOString().slice(0, 10);
+  }
+
+  // 1. YYYY-MM-DD
+  const isoMatch = low.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+  // 2. Month Name + Day: "august 31", "aug 31", "august 31st", "on august 31"
+  const m1 = low.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(20\d{2}))?\b/i);
+  if (m1) {
+    const m = MONTH_MAP[m1[1].slice(0, 3).toLowerCase()];
+    const d = String(m1[2]).padStart(2, '0');
+    const y = m1[3] || '2026';
+    return `${y}-${m}-${d}`;
+  }
+
+  // 3. Day + Month Name: "31 august", "31st august", "31st of august"
+  const m2 = low.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s*,?\s*(20\d{2}))?\b/i);
+  if (m2) {
+    const d = String(m2[1]).padStart(2, '0');
+    const m = MONTH_MAP[m2[2].slice(0, 3).toLowerCase()];
+    const y = m2[3] || '2026';
+    return `${y}-${m}-${d}`;
+  }
+
+  // 4. DD-MM-YYYY or DD/MM/YYYY
+  const m3 = low.match(/\b(\d{1,2})[-/](\d{1,2})(?:[-/](20\d{2}))?\b/);
+  if (m3 && Number(m3[1]) <= 31 && Number(m3[2]) <= 12) {
+    const d = String(m3[1]).padStart(2, '0');
+    const m = String(m3[2]).padStart(2, '0');
+    const y = m3[3] || '2026';
+    return `${y}-${m}-${d}`;
+  }
+
+  return null;
+}
+
+function findRelevantTransactions(allTxns, message, history = []) {
+  if (!Array.isArray(allTxns) || !allTxns.length) return { targetDate: null, matching: [] };
+  const userHistory = Array.isArray(history)
+    ? history.filter((h) => h.role === 'user' || h.role === 'User').slice(-3).map((h) => String(h.text || ''))
+    : [];
+  const combined = [message, ...userHistory].join(' ').toLowerCase();
+
+  const targetDate = parseTargetDate(message) || parseTargetDate(combined);
+
+  let minAmount = 0;
+  const minMatch = combined.match(/(?:more than|greater than|above|>|over|at least)\s*(?:rs\.?|inr|₹)?\s*([\d,]+)/i);
+  if (minMatch) {
+    minAmount = Number(minMatch[1].replace(/,/g, '')) || 0;
+  }
+
+  let maxAmount = Infinity;
+  const maxMatch = combined.match(/(?:less than|under|below|<|up to)\s*(?:rs\.?|inr|₹)?\s*([\d,]+)/i);
+  if (maxMatch) {
+    maxAmount = Number(maxMatch[1].replace(/,/g, '')) || Infinity;
+  }
+
+  const hasDebit = /\b(debits?|spent|paid|withdrawal|outgoing)\b/i.test(combined);
+  const hasCredit = /\b(credits?|received|incoming|got|deposit)\b/i.test(combined);
+  const isBusiness = /\bbusiness\b/i.test(combined);
+
+  const monthWord = combined.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i);
+  const targetMonth = monthWord ? `-${MONTH_MAP[monthWord[1].slice(0, 3).toLowerCase()]}-` : null;
+
+  const words = combined.split(/[^a-z0-9]/).filter((w) => w.length >= 2);
+
+  const scored = allTxns.map((t) => {
+    let score = 0;
+    const cat = String(t.category || '').toLowerCase();
+    const type = String(t.type || t.expense_type || '').toLowerCase();
+    const desc = String(t.description || t.merchant || t.merchant_display || '').toLowerCase();
+    const date = String(t.txn_date || t.date || '').slice(0, 10);
+    const debit = Number(t.debit || 0);
+    const credit = Number(t.credit || 0);
+    const amt = debit || credit;
+
+    // Exact date match gets top priority
+    if (targetDate && (date === targetDate || date.endsWith(targetDate.slice(4)))) {
+      score += 200;
+    } else if (targetDate) {
+      // Non-matching dates penalized when user specified an exact date
+      score -= 50;
+    }
+
+    if (isBusiness) {
+      if (cat === 'business' || type === 'business' || desc.includes('business')) {
+        score += 35;
+      }
+    }
+
+    if (minAmount > 0) {
+      if (hasDebit && debit >= minAmount) score += 25;
+      else if (hasCredit && credit >= minAmount) score += 25;
+      else if (!hasDebit && !hasCredit && amt >= minAmount) score += 20;
+      else return { t, score: -100 };
+    }
+
+    if (maxAmount < Infinity) {
+      if (amt <= maxAmount) score += 10;
+      else return { t, score: -100 };
+    }
+
+    if (hasDebit && debit > 0) score += 10;
+    if (hasCredit && credit > 0) score += 10;
+
+    if (targetMonth && date.includes(targetMonth)) {
+      score += 20;
+    }
+
+    for (const w of words) {
+      if (['debit', 'debits', 'credit', 'credits', 'more', 'than', 'rupees', 'category', 'money', 'this', 'month', 'show', 'me', 'in', 'on', 'transactions', 'again'].includes(w)) continue;
+      if (desc.includes(w)) score += 15;
+      if (cat.includes(w)) score += 15;
+    }
+
+    return { t, score };
+  });
+
+  const matching = scored
+    .filter((x) => x.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      // Tie-breaker: sort descending by date so most recent transactions come first
+      return String(b.t.txn_date || b.t.date || '').localeCompare(String(a.t.txn_date || a.t.date || ''));
+    })
+    .map((x) => x.t)
+    .slice(0, 75);
+
+  return { targetDate, matching };
+}
+
 async function callGeminiCloud(env, glance, message, history = []) {
   if (!env.GEMINI_API_KEY) return null;
   const apiKey = env.GEMINI_API_KEY;
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
   const dash = glance?.dashboard || {};
+  const dashAll = glance?.dashboard_all || dash;
   const balances = glance?.balances || [];
   const people = glance?.people || [];
-  const txns = (glance?.transactions || []).slice(0, 40);
+  const allTxns = (glance?.transactions && glance.transactions.length)
+    ? glance.transactions
+    : (glance?.books?.bank || []);
+
+  const { targetDate, matching: relevantTxns } = findRelevantTransactions(allTxns, message, history);
+
+  // Sort descending so the recent sample is truly the most recent transactions
+  const sortedDesc = [...allTxns].sort((a, b) =>
+    String(b.txn_date || b.date || '').localeCompare(String(a.txn_date || a.date || ''))
+  );
+  const recentSample = sortedDesc.slice(0, 25);
+  const latestDate = sortedDesc[0]?.txn_date || sortedDesc[0]?.date || 'Unknown';
+  const earliestDate = sortedDesc[sortedDesc.length - 1]?.txn_date || sortedDesc[sortedDesc.length - 1]?.date || 'Unknown';
 
   const contextPrompt = `You are the personal AI financial assistant for Anand.
 Current Date: ${dateStr}
-Current Month: ${dash.start_date || '2026-08-01'} to ${dash.end_date || '2026-08-31'}
-Total Expense Share This Month: ₹${fmt(dash.period_expense_share || 0)} (Total Debits: ₹${fmt(dash.period_debits || 0)}, Total Credits: ₹${fmt(dash.period_credits || 0)})
+Current Active Dashboard Period: ${dash.start_date || '2026-08-01'} to ${dash.end_date || '2026-08-31'}
+Total Expense Share for Active Period (Personal): ₹${fmt(dash.period_expense_share || 0)} (Total Debits: ₹${fmt(dash.period_debits || 0)}, Total Credits: ₹${fmt(dash.period_credits || 0)})
+Database Transaction Records Span: from ${earliestDate} up to ${latestDate}.
+${targetDate ? `Date Filter Target: ${targetDate} (${relevantTxns.length} matching transaction(s) found in records on this date).` : ''}
 
-Category Breakdown This Month:
-${(dash.by_category || []).map((c) => `- ${c.category}: ₹${fmt(c.amount)}`).join('\n') || 'None'}
+Category Breakdown This Month (Including Business):
+${((dashAll.by_category && dashAll.by_category.length) ? dashAll.by_category : (dash.by_category || [])).map((c) => `- ${c.category}: ₹${fmt(c.amount)}`).join('\n') || 'None'}
 
-Contact / Person Balances (Khata):
-${(people.length ? people : balances).map((b) => {
-  const net = Number(b.net) || 0;
-  if (net > 0) return `- ${b.contact_name}: owes Anand ₹${fmt(net)}`;
-  if (net < 0) return `- ${b.contact_name}: Anand owes ₹${fmt(Math.abs(net))}`;
-  return `- ${b.contact_name}: Settled (₹0)`;
-}).join('\n') || 'No balances'}
+All Valid Categories in System: Food, Groceries, Business, Rent, Health, Shopping, Entertainment, Utilities, Transport, Subscription, Personal Care, Family, Other, Flat, Travel, Transfer, Loan
+All Valid Expense Types: Personal, Business, Shared, Transfer, Loan, Other
 
-Recent Transactions Sample:
-${txns.slice(0, 25).map((t) => `- ${t.txn_date}: ${t.merchant_display || t.description} | ₹${fmt(t.debit || t.credit || t.amount || 0)} (${t.debit ? 'debit' : 'credit'}) | Category: ${t.category || 'Other'}`).join('\n')}
+${relevantTxns.length ? `Relevant Transactions Matching Query Intent:
+${relevantTxns.map((t) => `- ${t.txn_date || t.date}: ${t.merchant_display || t.merchant || t.description} | ₹${fmt(t.debit || t.credit || t.amount || 0)} (${t.debit ? 'debit' : 'credit'}) | Category: ${t.category || 'Other'} | Type: ${t.type || t.expense_type || 'Personal'}`).join('\n')}` : 'No specific matching transactions found.'}
 
-Instructions:
-1. Answer the user's question clearly, concisely, and accurately based on the financial and bank statement context provided above.
-2. Use Indian Rupee symbol (₹) for currency amounts.
-3. Be friendly, direct, and concise.`;
+Most Recent Transactions Sample:
+${recentSample.map((t) => `- ${t.txn_date || t.date}: ${t.merchant_display || t.merchant || t.description} | ₹${fmt(t.debit || t.credit || t.amount || 0)} (${t.debit ? 'debit' : 'credit'}) | Category: ${t.category || 'Other'} | Type: ${t.type || t.expense_type || 'Personal'}`).join('\n')}
+
+CRITICAL DOMAIN INSTRUCTIONS:
+1. When the user asks for transactions on a specific date (e.g. August 31, 2026), look at "Relevant Transactions Matching Query Intent" first. List ALL matching transactions found on that date with Date, Recipient/Merchant, Amount (with ₹), and Category. NEVER claim there are no records if transactions appear in Relevant Transactions or records span to that date.
+2. "Business" IS a fully valid, active category and expense type in Anand's tracker. Anand has business transactions and categories in his records. NEVER say that Anand does not have a "business" category or business expenses.
+3. If the user asks for debits more than an amount (e.g. > 2000) in Business (or any category), list all matching transactions from the Relevant Transactions above with Date, Recipient/Merchant, Amount (with ₹), and Category/Type, and state the total.
+4. Follow-up handling: If the user provides a short response like "Check again" or "In business", understand it in context of the conversation history.
+5. Use the Indian Rupee symbol (₹). Be direct, friendly, and concise.`;
 
   const contents = [];
   if (Array.isArray(history) && history.length > 0) {
-    for (const h of history.slice(-4)) {
-      contents.push({
-        role: h.role === 'model' || h.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: String(h.text || '') }],
-      });
+    for (const h of history.slice(-6)) {
+      const role = (h.role === 'model' || h.role === 'assistant') ? 'model' : 'user';
+      const text = String(h.text || '').trim();
+      if (text) {
+        if (!contents.length || contents[contents.length - 1].role !== role) {
+          contents.push({ role, parts: [{ text }] });
+        }
+      }
     }
+  }
+  if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+    contents.pop();
   }
   contents.push({
     role: 'user',

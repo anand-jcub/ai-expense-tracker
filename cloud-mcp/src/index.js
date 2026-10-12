@@ -1,5 +1,6 @@
 import { handleMcp, handleSync, handleLiveRegister } from './mcp.js';
 import { handleRest } from './rest.js';
+import { handleHighnesShare, handleHighnesSync, highnesCalendarIcs } from './highnes.js';
 
 export default {
   async fetch(request, env) {
@@ -36,13 +37,37 @@ export default {
       return handleLiveRegister(request, env);
     }
 
+    if (path === '/sync/highnes') {
+      return handleHighnesSync(request, env);
+    }
+
+    if (path === '/share/highnes/calendar.ics') {
+      return handleHighnesShare(request, env, { calendar: true, ics: highnesCalendarIcs });
+    }
+
+    if (path === '/share/highnes') {
+      return handleHighnesShare(request, env);
+    }
+
     if (path === '/') {
       const dest = new URL('/app/', request.url);
       return Response.redirect(dest, 302);
     }
 
     if (env.ASSETS) {
-      return env.ASSETS.fetch(request);
+      const resp = await env.ASSETS.fetch(request);
+      if (path === '/app' || path.endsWith('.html') || path.endsWith('/sw.js') || path === '/app/sw.js') {
+        const headers = new Headers(resp.headers);
+        headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        headers.set('Pragma', 'no-cache');
+        headers.set('Expires', '0');
+        return new Response(resp.body, {
+          status: resp.status,
+          statusText: resp.statusText,
+          headers,
+        });
+      }
+      return resp;
     }
 
     return new Response(

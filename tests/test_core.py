@@ -59,6 +59,33 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.category, "Food")
         self.assertEqual(result.status, "auto")
 
+    def test_upi_payee_extraction_with_bank_prefixes(self) -> None:
+        from expense_tracker.classifier import display_merchant
+        self.assertEqual(
+            display_merchant("WDL TFR UPI/DR/625455882957/SAJEEV G/SBIN/gsajeev254/UPI 0097694162092 AT 63970 BANDADKA"),
+            "Sajeev G",
+        )
+        self.assertEqual(
+            display_merchant("WDL TFR UPI/DR/625314422233/SUMAM J/CNRB/sumamj2018/UPI 0097693162093 AT 63970 BANDADKA"),
+            "Sumam J",
+        )
+        self.assertEqual(
+            display_merchant("WDL TFR UPI/DR/130859273600/ZOMATO/ HDFC/payzomato@/NO REM 0097693162093 AT 63970 BANDADKA"),
+            "Zomato",
+        )
+        self.assertEqual(
+            display_merchant("DEP TFR UPI/CR/625307149707/Anupriya/S BIN/anupriyara/UPI 0097693162093 AT 63970 BANDADKA"),
+            "Anupriya",
+        )
+        self.assertEqual(
+            display_merchant("WDL TFR UPI/DR/625241659185/VISHNU /SBIN/vishnuind8/UPI 0097692162094 AT 63970 BANDADKA"),
+            "Vishnu",
+        )
+        self.assertEqual(
+            display_merchant("WDL TFR UPI/DR/625478132164/Mathew C P/YESB/paytm.s1xt/UP 0097694162092 AT 63970 BANDADKA"),
+            "Mathew C P",
+        )
+
     def test_unknown_needs_review_then_learns(self) -> None:
         rows = [
             {
@@ -162,6 +189,49 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["txn_date"], "2026-07-01")
         self.assertEqual(rows[0]["debit"], Decimal("450.00"))
         self.assertEqual(rows[1]["credit"], Decimal("50000.00"))
+
+    def test_parse_sbi_row_without_description(self) -> None:
+        # Matches user statement where description is empty (e.g. loan EMI auto-debit)
+        table = [
+            [
+                ["Txn Date", "Value Date", "Description", "Ref No./Cheque No.", "Debit", "Credit", "Balance"],
+                ["16/08/2026", "16/08/2026", "UPI/DR/622886964832/JITHINRA/HDFC/bejithin13/UPI", "", "200.00", "", "25,000.00"],
+                ["17/08/2026", "17/08/2026", "", "", "4820.00", "", "20,180.00"],
+                ["17/08/2026", "17/08/2026", "UPI/DR/622936809603/REJI", "", "200.00", "", "19,980.00"],
+            ]
+        ]
+        rows = parse_table_rows(table)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[1]["txn_date"], "2026-08-17")
+        self.assertEqual(rows[1]["debit"], Decimal("4820.00"))
+        self.assertEqual(rows[1]["description"], "")
+
+    def test_import_transaction_without_description_and_reimport(self) -> None:
+        rows = [
+            {
+                "txn_date": "2026-08-17",
+                "value_date": "2026-08-17",
+                "description": "",
+                "reference": None,
+                "debit": Decimal("4820.00"),
+                "credit": Decimal("0"),
+                "balance": Decimal("20180.00"),
+                "raw_text": "17/08/2026 | 17/08/2026 | | 4820.00 | 20180.00",
+            }
+        ]
+        import_id, inserted, parsed = import_transactions(self.conn, "sbi.pdf", "hash_emi_1", rows, True)
+        self.assertEqual(inserted, 1)
+        self.assertEqual(parsed, 1)
+        tx = self.conn.execute("select * from transactions where id = (select max(id) from transactions)").fetchone()
+        self.assertEqual(tx["description"], "")
+        self.assertEqual(tx["merchant_display"], "No description")
+        classification = self.conn.execute("select * from classifications where transaction_id = ?", (tx["id"],)).fetchone()
+        self.assertEqual(classification["status"], "needs_review")
+
+        # Re-importing same file with same hash skips existing row and does not error
+        import_id2, inserted2, parsed2 = import_transactions(self.conn, "sbi.pdf", "hash_emi_1", rows, True)
+        self.assertEqual(import_id2, import_id)
+        self.assertEqual(inserted2, 0)
 
     def test_review_row_shows_credit_amount(self) -> None:
         html = render_review_rows(
@@ -978,6 +1048,166 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(Decimal(str(row["split_ratio"])), Decimal("0.5"))
         self.assertEqual(Decimal(str(row["my_share"])), Decimal("6750.00"))
 
+    def test_valid_statement_email_filter(self) -> None:
+        from expense_tracker.mail_import import _is_valid_statement_email
+
+        # WhatsApp statements
+        msg_wa = {"From": "whatsappbanking@alerts.sbi.bank.in", "Subject": "Deposit Account Statement for ..."}
+        self.assertTrue(_is_valid_statement_email(msg_wa))
+
+        # YONO statements
+        msg_yono = {"From": "yonobysbi@alerts.sbi.bank.in", "Subject": "Email Statement"}
+        self.assertTrue(_is_valid_statement_email(msg_yono))
+
+        # Blocked monthly e-CAS
+        msg_cas = {"From": "cbssbi.cas@alerts.sbi.bank.in", "Subject": "E-account statement for your SBI account(s)."}
+        self.assertFalse(_is_valid_statement_email(msg_cas))
+
+        # Unrelated email
+        msg_other = {"From": "alerts@bigbasket.com", "Subject": "Your order is delivered"}
+        self.assertFalse(_is_valid_statement_email(msg_other))
+
+    def test_yono_upi_extraction_and_deduplication(self) -> None:
+        from expense_tracker.classifier import display_merchant, normalize_merchant
+        desc_wa = "UPI/DR/624473598924/Shajeer ./SBIN/jshajeer35/UPI"
+        desc_yono = "WDL TFR UPI/DR/624473598924/Shajeer . /SBIN/jshajeer35/UP 0097691162095 AT 63970 BANDADKA"
+        self.assertEqual(display_merchant(desc_wa), "Shajeer")
+        self.assertEqual(display_merchant(desc_yono), "Shajeer")
+        self.assertEqual(normalize_merchant(desc_wa), "shajeer")
+        self.assertEqual(normalize_merchant(desc_yono), "shajeer")
+
+        # Test deduplication across statement formats
+        row_wa = {
+            "txn_date": "2026-09-01",
+            "value_date": "2026-09-01",
+            "description": desc_wa,
+            "reference": None,
+            "debit": Decimal("171.00"),
+            "credit": Decimal("0.00"),
+            "balance": Decimal("10000.00"),
+            "raw_text": desc_wa,
+        }
+        row_yono = {
+            "txn_date": "2026-09-01",
+            "value_date": "2026-09-01",
+            "description": desc_yono,
+            "reference": None,
+            "debit": Decimal("171.00"),
+            "credit": Decimal("0.00"),
+            "balance": Decimal("10000.00"),
+            "raw_text": desc_yono,
+        }
+        _, ins1, _ = import_transactions(self.conn, "wa.pdf", "hash_wa_1", [row_wa], True)
+        self.assertEqual(ins1, 1)
+        _, ins2, _ = import_transactions(self.conn, "yono.pdf", "hash_yono_1", [row_yono], True)
+        self.assertEqual(ins2, 0)
+
+    def test_auto_contact_linking_on_import(self) -> None:
+        from expense_tracker.contacts import create_contact, find_contact_by_text
+        c = find_contact_by_text(self.conn, "Anupriya")
+        cid = int(c["id"]) if c else create_contact(self.conn, "Anupriya")
+        row = {
+            "txn_date": "2026-09-10",
+            "value_date": "2026-09-10",
+            "description": "DEP TFR UPI/CR/625307149707/Anupriya/SBIN/anupriyara/UPI 0097735162098 AT 63970 BANDADKA",
+            "reference": None,
+            "debit": Decimal("0.00"),
+            "credit": Decimal("6750.00"),
+            "balance": Decimal("20000.00"),
+            "raw_text": "raw",
+        }
+        _, ins, _ = import_transactions(self.conn, "yono.pdf", "hash_yono_contact", [row], True)
+        self.assertEqual(ins, 1)
+        tx = self.conn.execute("SELECT c.* FROM classifications c JOIN transactions t ON t.id = c.transaction_id WHERE t.merchant_display = 'Anupriya'").fetchone()
+        self.assertEqual(tx["shared_with"], "Anupriya")
+        self.assertEqual(tx["shared_with_contact_id"], cid)
+
+    def test_custom_figure_split_and_partner_residual(self) -> None:
+        from expense_tracker.db import add_manual_transaction, review_transaction
+        from expense_tracker.services import partner_share_for_row, split_display, review_people_value
+        from expense_tracker.templates import render_review_rows, render_edit_rows
+
+        # 1. Add manual transaction with custom my_share
+        txn_id = add_manual_transaction(
+            self.conn,
+            txn_date="2026-09-11",
+            description="Pharmacy Medicine",
+            amount=Decimal("4140.00"),
+            direction="debit",
+            category="Health",
+            expense_type="Shared",
+            notes="Medicine split",
+            shared_with="Highnes",
+            my_share=Decimal("2452.00"),
+        )
+        row = self.conn.execute(
+            """
+            SELECT t.*, c.category, c.expense_type, c.split_ratio, c.my_share, c.status, c.shared_with
+            FROM transactions t
+            JOIN classifications c ON c.transaction_id = t.id
+            WHERE t.id = ?
+            """,
+            (txn_id,),
+        ).fetchone()
+        self.assertEqual(Decimal(str(row["my_share"])), Decimal("2452.00"))
+        # Partner share residual must be exactly 4140 - 2452 = 1688
+        partner_share = partner_share_for_row(row)
+        self.assertEqual(partner_share, Decimal("1688.00"))
+        # Split display should show Custom percentage
+        self.assertEqual(split_display(row["split_ratio"]), "Custom (59%)")
+        self.assertEqual(review_people_value(row), "")
+
+        # 2. Test review_transaction with custom my_share on imported row
+        cur = self.conn.cursor()
+        cur.execute("insert into imports (source_filename, file_sha256, imported_at) values ('wa_test.pdf', 'h_wa_test', '2026-09-11')")
+        imp_id = cur.lastrowid
+        cur.execute(
+            """
+            insert into transactions (import_id, source_hash, raw_text, txn_date, description, merchant_key, merchant_display, amount_signed, debit, credit, created_at)
+            values (?, 'h_wa_tx', 'raw', '2026-09-11', 'Hospital bill', 'hospital', 'Hospital', -5000.0, 5000.0, 0.0, '2026-09-11T10:00:00Z')
+            """,
+            (imp_id,),
+        )
+        tid2 = cur.lastrowid
+        cur.execute(
+            """
+            insert into classifications (transaction_id, category, expense_type, split_ratio, my_share, status, confidence, updated_at)
+            values (?, 'Health', 'Personal', 1.0, 5000.0, 'needs_review', 0.5, '2026-09-11T10:00:00Z')
+            """,
+            (tid2,),
+        )
+        self.conn.commit()
+
+        # Review with custom share: 3000 personal, 2000 other
+        review_transaction(
+            self.conn,
+            transaction_id=tid2,
+            category="Health",
+            expense_type="Shared",
+            shared_with="Ranjima",
+            my_share=Decimal("3000.00"),
+        )
+        row2 = self.conn.execute(
+            """
+            SELECT t.*, c.category, c.expense_type, c.split_ratio, c.my_share, c.status, c.shared_with
+            FROM transactions t
+            JOIN classifications c ON c.transaction_id = t.id
+            WHERE t.id = ?
+            """,
+            (tid2,),
+        ).fetchone()
+        self.assertEqual(Decimal(str(row2["my_share"])), Decimal("3000.00"))
+        self.assertEqual(partner_share_for_row(row2), Decimal("2000.00"))
+        self.assertEqual(split_display(row2["split_ratio"]), "Custom (60%)")
+
+        # 3. Test template rendering contains custom values and input fields
+        edit_html = render_edit_rows([row2])
+        self.assertIn('name="edit_my_share_' + str(tid2) + '"', edit_html)
+        self.assertIn('value="3000.00"', edit_html)
+        self.assertIn('value="2000.00"', edit_html)
+        self.assertIn('data-total="5000.00"', edit_html)
+
 
 if __name__ == "__main__":
     unittest.main()
+

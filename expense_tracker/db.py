@@ -506,9 +506,31 @@ def import_transactions(
 
     for row in rows:
         merchant_key = normalize_merchant(row["description"])
-        merchant_display = display_merchant(row["description"])
+        merchant_display = display_merchant(row["description"], fallback="No description")
         source_hash = transaction_hash(row)
         amount_signed = Decimal(str(row.get("credit") or "0")) - Decimal(str(row.get("debit") or "0"))
+
+        # Deduplication for UPI transactions across different statement layouts (e.g. WhatsApp vs YONO)
+        upi_ref_match = re.search(r"upi/(?:dr|cr|ref)/([a-z0-9]+)", str(row.get("description") or ""), re.I)
+        if upi_ref_match:
+            upi_ref = upi_ref_match.group(1)
+            existing_dup = conn.execute(
+                """
+                SELECT id FROM transactions
+                WHERE txn_date = ? AND debit = ? AND credit = ?
+                  AND description LIKE ?
+                """,
+                (
+                    row["txn_date"],
+                    str(row.get("debit") or "0"),
+                    str(row.get("credit") or "0"),
+                    f"%{upi_ref}%",
+                ),
+            ).fetchone()
+            if existing_dup:
+                skipped += 1
+                continue
+
         try:
             txn_cur = conn.execute(
                 """
@@ -542,30 +564,60 @@ def import_transactions(
             continue
 
         classification = classify_transaction(conn, merchant_key)
+
+        # Contact matching on import
+        sw_name = None
+        sw_cid = None
+        try:
+            from .contacts import find_contact_by_text
+
+            c_match = find_contact_by_text(conn, merchant_display)
+            if c_match:
+                sw_name = c_match["name"]
+                sw_cid = int(c_match["id"])
+        except Exception:
+            pass
+
         my_share = effective_share(
             amount_signed,
             classification.expense_type,
             classification.split_ratio,
         )
+
+        cols = _table_columns(conn, "classifications")
+        fields = [
+            "transaction_id",
+            "category",
+            "expense_type",
+            "split_ratio",
+            "my_share",
+            "status",
+            "confidence",
+            "rule_id",
+            "updated_at",
+        ]
+        values = [
+            int(txn_cur.lastrowid),
+            classification.category,
+            classification.expense_type,
+            str(classification.split_ratio),
+            str(my_share),
+            classification.status,
+            str(classification.confidence),
+            classification.rule_id,
+            now,
+        ]
+        if "shared_with" in cols:
+            fields.append("shared_with")
+            values.append(sw_name)
+        if "shared_with_contact_id" in cols:
+            fields.append("shared_with_contact_id")
+            values.append(sw_cid)
+
+        placeholders = ", ".join("?" * len(values))
         conn.execute(
-            """
-            insert into classifications (
-                transaction_id, category, expense_type, split_ratio, my_share,
-                status, confidence, rule_id, updated_at
-            )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                int(txn_cur.lastrowid),
-                classification.category,
-                classification.expense_type,
-                str(classification.split_ratio),
-                str(my_share),
-                classification.status,
-                str(classification.confidence),
-                classification.rule_id,
-                now,
-            ),
+            f"insert into classifications ({', '.join(fields)}) values ({placeholders})",
+            values,
         )
         inserted += 1
 
@@ -593,6 +645,8 @@ def add_manual_transaction(
     notes: str | None = None,
     learn: bool = False,
     uploaded_by: str | None = None,
+    shared_with: str | None = None,
+    my_share: Decimal | None = None,
 ) -> int:
     if amount <= 0:
         raise ValueError("Amount must be greater than zero.")
@@ -606,6 +660,19 @@ def add_manual_transaction(
     amount_signed = credit - debit
     merchant_key = normalize_merchant(description)
     merchant_display = display_merchant(description, fallback="Manual")
+
+    sw_text = (shared_with or "").strip() or None
+    sw_cid = None
+    if sw_text:
+        expense_type = "Shared"
+        try:
+            from .contacts import find_contact_by_text
+
+            match = find_contact_by_text(conn, sw_text)
+            if match:
+                sw_cid = int(match["id"])
+        except Exception:
+            pass
 
     cur = conn.execute(
         """
@@ -644,21 +711,39 @@ def add_manual_transaction(
     )
     transaction_id = int(txn_cur.lastrowid)
 
-    # Insert classification directly in final state instead of
-    # creating a placeholder then immediately overwriting it.
-    my_share = effective_share(amount_signed, expense_type, split_ratio)
+    # Calculate my_share and split_ratio
+    if my_share is not None and expense_type == "Shared":
+        my_share_dec = Decimal(str(my_share)).quantize(Decimal("0.01"))
+        if amount > Decimal("0"):
+            split_ratio = (my_share_dec / amount)
+        my_share = my_share_dec
+    else:
+        my_share = effective_share(amount_signed, expense_type, split_ratio)
+
     rule_id = None
     if learn:
         rule_id = _save_merchant_rule(conn, merchant_key, merchant_display, category, expense_type, split_ratio, now)
+
+    cols = _table_columns(conn, "classifications")
+    fields = [
+        "transaction_id", "category", "expense_type", "split_ratio", "my_share",
+        "status", "confidence", "rule_id", "notes", "updated_at"
+    ]
+    vals = [
+        transaction_id, category, expense_type, str(split_ratio), str(my_share),
+        "reviewed", 1.0, rule_id, notes, now
+    ]
+    if "shared_with" in cols:
+        fields.append("shared_with")
+        vals.append(sw_text)
+    if "shared_with_contact_id" in cols:
+        fields.append("shared_with_contact_id")
+        vals.append(sw_cid)
+
+    placeholders = ", ".join("?" * len(vals))
     conn.execute(
-        """
-        insert into classifications (
-            transaction_id, category, expense_type, split_ratio, my_share,
-            status, confidence, rule_id, notes, updated_at
-        )
-        values (?, ?, ?, ?, ?, 'reviewed', 1.0, ?, ?, ?)
-        """,
-        (transaction_id, category, expense_type, str(split_ratio), str(my_share), rule_id, notes, now),
+        f"insert into classifications ({', '.join(fields)}) values ({placeholders})",
+        tuple(vals),
     )
     conn.execute(
         """
@@ -730,6 +815,7 @@ def review_transaction(
     learn: bool = False,
     shared_with: str | None = None,
     shared_with_contact_id: int | None = None,
+    my_share: Decimal | None = None,
 ) -> None:
     tx = conn.execute(
         "select merchant_key, merchant_display, amount_signed from transactions where id = ?",
@@ -753,7 +839,27 @@ def review_transaction(
     if sw_text or sw_cid:
         expense_type = "Shared"
     if expense_type != "Shared":
-        split_ratio = Decimal("1")
+        # Do not trust a hidden "people" field on Personal rows.
+        # A new review is 100%. An already saved split (rent at half, etc.)
+        # must survive a later edit or a bulk resave.
+        existing = conn.execute(
+            "select split_ratio, status from classifications where transaction_id = ?",
+            (transaction_id,),
+        ).fetchone()
+        if existing and str(existing["status"] or "") != "needs_review":
+            split_ratio = Decimal(str(existing["split_ratio"]))
+        else:
+            split_ratio = Decimal("1")
+
+    amount = Decimal(str(tx["amount_signed"]))
+    total_base = abs(amount)
+    if my_share is not None and expense_type == "Shared":
+        my_share_dec = Decimal(str(my_share)).quantize(Decimal("0.01"))
+        if total_base > Decimal("0"):
+            split_ratio = (my_share_dec / total_base)
+        my_share = my_share_dec
+    else:
+        my_share = effective_share(amount, expense_type, split_ratio)
 
     now = utc_now()
     rule_id = None
@@ -762,9 +868,6 @@ def review_transaction(
             conn, tx["merchant_key"], tx["merchant_display"],
             category, expense_type, split_ratio, now,
         )
-
-    amount = Decimal(str(tx["amount_signed"]))
-    my_share = effective_share(amount, expense_type, split_ratio)
 
     cols = _table_columns(conn, "classifications")
     set_parts = [
@@ -833,39 +936,81 @@ def apply_learned_rules_to_pending(
     now = now or utc_now()
     pending = conn.execute(
         """
-        select t.id, t.merchant_key, t.amount_signed
+        select t.id, t.merchant_key, t.merchant_display, t.amount_signed, c.category
         from transactions t
         join classifications c on c.transaction_id = t.id
         where c.status = 'needs_review'
         """
     ).fetchall()
     updated = 0
+    cols = _table_columns(conn, "classifications")
+    has_contact_cols = "shared_with" in cols and "shared_with_contact_id" in cols
     for row in pending:
         classification = classify_transaction(conn, row["merchant_key"])
         if classification.rule_id is None:
+            if rule_id is not None or not (classification.status == "auto" and not row["category"]):
+                continue
+        elif rule_id is not None and classification.rule_id != rule_id:
             continue
-        if rule_id is not None and classification.rule_id != rule_id:
-            continue
+
         amount = Decimal(str(row["amount_signed"]))
         my_share = effective_share(amount, classification.expense_type, classification.split_ratio)
-        conn.execute(
-            """
-            update classifications
-            set category = ?, expense_type = ?, split_ratio = ?, my_share = ?,
-                status = 'auto', confidence = ?, rule_id = ?, updated_at = ?
-            where transaction_id = ?
-            """,
-            (
-                classification.category,
-                classification.expense_type,
-                str(classification.split_ratio),
-                str(my_share),
-                str(classification.confidence),
-                classification.rule_id,
-                now,
-                row["id"],
-            ),
-        )
+
+        sw_name = None
+        sw_cid = None
+        if has_contact_cols:
+            try:
+                from .contacts import find_contact_by_text
+
+                c_match = find_contact_by_text(conn, row["merchant_display"])
+                if c_match:
+                    sw_name = c_match["name"]
+                    sw_cid = int(c_match["id"])
+            except Exception:
+                pass
+
+        if sw_cid is not None:
+            conn.execute(
+                """
+                update classifications
+                set category = ?, expense_type = ?, split_ratio = ?, my_share = ?,
+                    status = 'auto', confidence = ?, rule_id = ?, updated_at = ?,
+                    shared_with = coalesce(shared_with, ?),
+                    shared_with_contact_id = coalesce(shared_with_contact_id, ?)
+                where transaction_id = ?
+                """,
+                (
+                    classification.category,
+                    classification.expense_type,
+                    str(classification.split_ratio),
+                    str(my_share),
+                    str(classification.confidence),
+                    classification.rule_id,
+                    now,
+                    sw_name,
+                    sw_cid,
+                    row["id"],
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                update classifications
+                set category = ?, expense_type = ?, split_ratio = ?, my_share = ?,
+                    status = 'auto', confidence = ?, rule_id = ?, updated_at = ?
+                where transaction_id = ?
+                """,
+                (
+                    classification.category,
+                    classification.expense_type,
+                    str(classification.split_ratio),
+                    str(my_share),
+                    str(classification.confidence),
+                    classification.rule_id,
+                    now,
+                    row["id"],
+                ),
+            )
         updated += 1
     return updated
 

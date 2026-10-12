@@ -70,6 +70,16 @@ export function fetchDashboardSummary(params = {}) {
   return getJson(`/api/dashboard/summary${suffix}`)
 }
 
+export function fetchCategoryTransactions(params = {}) {
+  const q = new URLSearchParams()
+  if (params.category) q.set('category', params.category)
+  if (params.start_date) q.set('start_date', params.start_date)
+  if (params.end_date) q.set('end_date', params.end_date)
+  if (params.exclude_business === false) q.set('exclude_business', '0')
+  const suffix = q.toString() ? `?${q}` : ''
+  return getJson(`/api/transactions${suffix}`)
+}
+
 export function fetchSettlementSummary() {
   return getJson('/api/settlement/summary')
 }

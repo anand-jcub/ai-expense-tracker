@@ -160,7 +160,7 @@ class DateFilteringStressTests(unittest.TestCase):
         # Add transactions in 2022 (well before current system date)
         add_manual_transaction(
             self.conn,
-            txn_date="2022-01-10",
+            txn_date="2022-06-10",
             description="Old 2022 Txn 1",
             amount=Decimal("400.00"),
             direction="debit",
@@ -185,7 +185,7 @@ class DateFilteringStressTests(unittest.TestCase):
         self.assertIn("Old 2022 Txn 2", html_default)
 
         # Explicit historical filter
-        html_filtered = page(data, start_date="2022-01-01", end_date="2022-01-31").decode("utf-8")
+        html_filtered = page(data, start_date="2022-06-01", end_date="2022-06-12").decode("utf-8")
         self.assertIn("Old 2022 Txn 1", html_filtered)
         self.assertNotIn("Old 2022 Txn 2", html_filtered)
 
@@ -362,6 +362,74 @@ class DateFilteringStressTests(unittest.TestCase):
         self.assertIn("Target Day Txn B", html)
         self.assertNotIn("Day Before Txn", html)
         self.assertNotIn("Day After Txn", html)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # 7. Strict Period Scoping across Transactions, Money Flow, and Sub-filters
+    # ──────────────────────────────────────────────────────────────────────────
+    def test_unified_transactions_and_money_flow_strictly_scoped_to_period(self) -> None:
+        """Verify transactions workspace, money flow, and shared table only show in-period items."""
+        # June transaction
+        add_manual_transaction(
+            self.conn,
+            txn_date="2026-06-15",
+            description="June Swiggy Order",
+            amount=Decimal("450.00"),
+            direction="debit",
+            category="Food",
+            expense_type="Personal",
+        )
+        # July transaction (shared)
+        add_manual_transaction(
+            self.conn,
+            txn_date="2026-07-20",
+            description="July Grocery Share",
+            amount=Decimal("1200.00"),
+            direction="debit",
+            category="Groceries",
+            expense_type="Shared",
+            shared_with="PartnerA",
+        )
+        # August transactions (one personal, one shared)
+        add_manual_transaction(
+            self.conn,
+            txn_date="2026-08-10",
+            description="August Uber Ride",
+            amount=Decimal("320.00"),
+            direction="debit",
+            category="Transport",
+            expense_type="Personal",
+        )
+        add_manual_transaction(
+            self.conn,
+            txn_date="2026-08-25",
+            description="August Dinner Share",
+            amount=Decimal("1800.00"),
+            direction="debit",
+            category="Food",
+            expense_type="Shared",
+            shared_with="PartnerB",
+        )
+
+        data = dashboard_data(self.conn)
+
+        # Select August 2026
+        html = page(data, start_date="2026-08-01", end_date="2026-08-31").decode("utf-8")
+
+        # In-period transactions must be present
+        self.assertIn("August Uber Ride", html)
+        self.assertIn("August Dinner Share", html)
+
+        # Out-of-period transactions must NOT be present in tables/flow
+        self.assertNotIn("June Swiggy Order", html)
+        self.assertNotIn("July Grocery Share", html)
+
+        # Navigation pill links must retain start_date and end_date
+        self.assertIn('start_date=2026-08-01', html)
+        self.assertIn('end_date=2026-08-31', html)
+
+        # Hidden fields for form batch review must retain start_date and end_date
+        self.assertIn('<input type="hidden" name="start_date" value="2026-08-01">', html)
+        self.assertIn('<input type="hidden" name="end_date" value="2026-08-31">', html)
 
 
 if __name__ == "__main__":

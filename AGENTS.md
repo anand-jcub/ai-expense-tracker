@@ -58,7 +58,7 @@ Before multi-file feature work (add/remove/change behavior), run the **architect
 1. **No Silent Capping**: When rendering lists filtered by date period or category, never apply hardcoded array slices (e.g. `rows[:40]`, `flow_txns[:50]`) inside template loops. If pagination is needed, implement explicit page controls.
 2. **UPI Merchant Naming**: `expense_tracker/classifier.py` is the single source of truth for payee display strings. Preserve initials (e.g. `"Mathew C P"`) and expand brands via `_UPI_BRAND_MAP`. Any parser updates must be backfilled to existing SQLite databases.
 3. **Shared Expense Defaults**: Default split count is 2 people unless specified otherwise.
-4. **User Review Immutability**: Any transaction with `status = 'reviewed'` or user-confirmed split ratio is strictly immutable to automated re-classification, re-imports, or batch classifier scripts. Reclassification operations must only target unreviewed items (`WHERE status != 'reviewed'`).
+4. **User Review Immutability**: Any transaction with `status = 'reviewed'` or a user-confirmed split (`split_ratio` / `my_share`, including Personal rows that are not 100%) is strictly immutable to automated re-classification, re-imports, or batch scripts. Never bulk-set `split_ratio = 1`. Reclassification may only target `status = 'needs_review'`.
 
 ## Local run
 
